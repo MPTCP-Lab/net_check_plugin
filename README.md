@@ -1,4 +1,4 @@
-# Routing Plugin
+# Network Check Plugin
 
 MPTCPD network check plugin
 
