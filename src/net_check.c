@@ -24,15 +24,32 @@ struct net_mask {
         uint8_t mask;
 };
 
+struct net_queues {
+        struct l_queue *ipv4;
+        struct l_queue *ipv6;
+};
+
 struct conf{
-        struct l_queue *whitelist_ipv4;
-        struct l_queue *whitelist_ipv6;
+        struct net_queues whitelist;
+        struct net_queues blacklist;
         bool check_public;
         char *stun_server;
         uint16_t stun_port;
 };
 
-struct conf config;
+struct conf config = {
+        .whitelist = {
+                .ipv4 = NULL,
+                .ipv6 = NULL
+        },
+        .blacklist = { 
+                .ipv4 = NULL,
+                .ipv6 = NULL
+        },
+        .check_public = false,
+        .stun_server = NULL,
+        .stun_port = 0
+};
 
 struct l_uintset *success_ifs;
 
@@ -58,7 +75,7 @@ static bool get_address_mask(char *mask, uint8_t *max_out)
 
 }
 
-static bool add_network(char *const network)
+static bool add_network(struct net_queues *list, char *const network)
 {
         char copy[64];
         l_strlcpy(copy, network, 64);
@@ -76,14 +93,14 @@ static bool add_network(char *const network)
                 family = AF_INET;
                 pointer = &net_m->ipv4;
                 net_m->mask = 32;
-                queue = config.whitelist_ipv4;
+                queue = list->ipv4;
 
         }else if (strchr(network, ':')) { //ipv6
 
                 family = AF_INET6;
                 pointer = &net_m->ipv6;
                 net_m->mask = 128;
-                queue = config.whitelist_ipv6;
+                queue = list->ipv6;
 
         }else
                 return false; //neither ipv4 nor ipv6
@@ -98,27 +115,29 @@ static bool add_network(char *const network)
         return l_queue_push_tail(queue, net_m);
 }
 
-static void parse_config_whitelist_ipv4(struct l_settings *settings, 
-                                        char const *group)
+static void parse_config_list(struct l_settings *settings, 
+                              char const *group,
+                              char const *key,
+                              struct net_queues *queues)
 {
 
-        char **const whitelist = l_settings_get_string_list(settings,
-                                                            group,
-                                                            "whitelist",
-                                                            ',');
+        char **const list = l_settings_get_string_list(settings,
+                                                       group,
+                                                       key,
+                                                       ',');
 
-        if (l_strv_length(whitelist)) {
-                config.whitelist_ipv4 = l_queue_new();
-                config.whitelist_ipv6 = l_queue_new();
+        if (l_strv_length(list)) {
+                queues->ipv4 = l_queue_new();
+                queues->ipv6 = l_queue_new();
 
                 int index = 0;
-                while (whitelist[index]) {
-                        add_network(whitelist[index]);
+                while (list[index]) {
+                        add_network(queues, list[index]);
                         index++;
                 }
         }
 
-        l_strv_free(whitelist);
+        l_strv_free(list);
 }
 
 static void parse_config_check_public(struct l_settings *settings,
@@ -160,7 +179,9 @@ static void parse_config(struct l_settings *settings, void *user_data)
 
         static char group[] = "core";
 
-        parse_config_whitelist_ipv4(settings, group);
+        parse_config_list(settings, group, "whitelist", &config.whitelist);
+
+        parse_config_list(settings, group, "blacklist", &config.blacklist);
 
         parse_config_check_public(settings, group);
         
@@ -174,12 +195,12 @@ static inline uint16_t calc_bit_mask(uint8_t mask_remainder)
         return ((2 << (mask_remainder - 1)) - 1) << (8 - mask_remainder);
 }
 
-static bool check_network_ipv6(struct in6_addr const *addr)
+static bool check_network_ipv6(struct l_queue *queue, struct in6_addr const *addr)
 {
         uint8_t const *addr6 = addr->__in6_u.__u6_addr8;
 
         struct l_queue_entry const *entry =
-                l_queue_get_entries(config.whitelist_ipv6);
+                l_queue_get_entries(queue);
 
         while (entry) {
 
@@ -211,10 +232,10 @@ static bool check_network_ipv6(struct in6_addr const *addr)
         return false;
 }
 
-static bool check_network_ipv4(struct in_addr const *addr)
+static bool check_network_ipv4(struct l_queue *queue, struct in_addr const *addr)
 {
         struct l_queue_entry const *entry =
-                l_queue_get_entries(config.whitelist_ipv4);
+                l_queue_get_entries(queue);
 
         while (entry) {
                 struct net_mask *net_m = entry->data;
@@ -233,6 +254,35 @@ static bool check_network_ipv4(struct in_addr const *addr)
 static inline bool check_invalid_queue(struct l_queue *queue)
 {
         return queue == NULL || l_queue_length(queue);
+}
+
+static bool elem_collision(struct l_queue *q1, struct l_queue *q2)
+{
+        struct l_queue_entry const *e1 =
+                l_queue_get_entries(q1);
+
+        struct l_queue_entry const *e2 =
+                l_queue_get_entries(q2);
+
+        while (e1) {
+                struct net_mask *nm1 = e1->data;
+
+                struct l_queue_entry const *e3 = e2;
+
+                while (e3) {
+
+                        struct net_mask *nm2 = e3->data;
+
+                        if (!memcmp(nm1, nm2, sizeof(struct net_mask)))
+                                return true;
+
+                        e3 = e3->next;
+                }
+
+                e1 = e1->next;
+        }
+
+        return false;
 }
 
 // ----------------------------------------------------------------------
@@ -261,11 +311,21 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
                         addr_pointer = 
                                 &((struct sockaddr_in *) sa)->sin_addr;
 
-                check = check_network_ipv4(addr_pointer);
+                check = check_network_ipv4(config.whitelist.ipv4, 
+                                           addr_pointer) &&
+                        !check_network_ipv4(config.blacklist.ipv4,
+                                            addr_pointer);
 
-        } else
-                check = check_network_ipv6(
-                                &((struct sockaddr_in6 *) sa)->sin6_addr);
+        } else {
+
+                struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) sa;
+
+                check = check_network_ipv6(config.whitelist.ipv6,
+                                           &sa6->sin6_addr) &&
+                        !check_network_ipv6(config.blacklist.ipv6,
+                                            &sa6->sin6_addr);
+
+        }
         
         if (check) {
 
@@ -300,17 +360,23 @@ static int net_check_init(struct mptcpd_pm *pm)
 {
         (void) pm;
 
-        config.whitelist_ipv4 = NULL;
-        config.whitelist_ipv6 = NULL;
-        config.check_public = false;
-        config.stun_server = NULL;
-        config.stun_port = 0;
-
         mptcpd_plugin_read_config(name, parse_config, NULL);
 
-        if (check_invalid_queue(config.whitelist_ipv4) &&
-            check_invalid_queue(config.whitelist_ipv6)) {
+        if (check_invalid_queue(config.whitelist.ipv4) &&
+            check_invalid_queue(config.whitelist.ipv6) &&
+            check_invalid_queue(config.blacklist.ipv4) &&
+            check_invalid_queue(config.blacklist.ipv6)) {
                 //l_error
+                //clean
+                return -1;
+        }
+
+        if (elem_collision(config.whitelist.ipv4, 
+                           config.blacklist.ipv4) ||
+            elem_collision(config.whitelist.ipv6,
+                           config.blacklist.ipv6)) {
+                //l_error
+                //clean
                 return -1;
         }
 
@@ -352,9 +418,9 @@ static void net_check_exit(struct mptcpd_pm *pm)
 
         l_free(config.stun_server);
 
-        l_queue_destroy(config.whitelist_ipv6, l_free);
+        l_queue_destroy(config.whitelist.ipv6, l_free);
 
-        l_queue_destroy(config.whitelist_ipv4, l_free);
+        l_queue_destroy(config.whitelist.ipv4, l_free);
 
         l_info("MPTCP network check plugin exited.");
 }
