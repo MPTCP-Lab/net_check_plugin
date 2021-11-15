@@ -40,7 +40,8 @@ static char const name[] = "net_check";
 
 // ----------------------------------------------------------------------
 
-static bool get_address_mask(char *mask, uint8_t *max_out){
+static bool get_address_mask(char *mask, uint8_t *max_out)
+{
 
 	char *end;
 	unsigned long mask_dec;
@@ -57,8 +58,8 @@ static bool get_address_mask(char *mask, uint8_t *max_out){
 
 }
 
-static bool add_network(char *const network){
-
+static bool add_network(char *const network)
+{
         char copy[64];
         l_strlcpy(copy, network, 64);
         char *mask = strchr(copy, '/');
@@ -251,7 +252,10 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
 
                 if (config.check_public) {
                         struct in_addr addr;
-                        get_public_ipv4((char *) i->name, &addr);
+                        if (!get_public_ipv4((char *) i->name, &addr)){
+                                l_info("failed to get ip");
+                                return false;
+                        }
                         addr_pointer = &addr;
                 } else 
                         addr_pointer = 
@@ -320,8 +324,11 @@ static int net_check_init(struct mptcpd_pm *pm)
 
         success_ifs = l_uintset_new(USHRT_MAX);
 
-        if (config.check_public)
-                stun_client_init(config.stun_server, config.stun_port);
+        if (config.check_public &&
+            !stun_client_init(config.stun_server, config.stun_port)) {
+                l_info("failed to init stun");
+                return -1;
+        }
 
         if (!mptcpd_plugin_register_ops(name, &pm_ops)) {
                 l_error("Failed to initialize plugin '%s'.", name);

@@ -11,6 +11,6 @@ plugindir = @MPTCPD_PLUGINDIR@
 lib_LTLIBRARIES = net_check.la
 
 net_check_la_SOURCES  = net_check.c
-net_check_la_CFLAGS   = $(MPTCPD_CFLAGS)
+net_check_la_CFLAGS   = $(MPTCPD_CFLAGS) -lstuncli
 net_check_la_LDFLAGS  = -no-undefined -module -avoid-version	
 net_check_la_LIBADD   = $(MPTCPD_LIBS)
