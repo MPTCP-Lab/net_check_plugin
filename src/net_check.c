@@ -16,6 +16,11 @@
 
 #include <libstuncli/libstuncli.h>
 
+typedef void (*flooding_function) (char const *name,
+                                   struct mptcpd_interface const *i,
+                                   struct sockaddr const *sa,
+                                   struct mptcpd_pm *pm);
+
 struct net_mask {
         union {
                 struct in_addr ipv4;
@@ -32,7 +37,7 @@ struct net_queues {
 struct conf{
         struct net_queues whitelist;
         struct net_queues blacklist;
-        bool check_public;
+        bool use_stun;
         char *stun_server;
         uint16_t stun_port;
 };
@@ -46,12 +51,13 @@ struct conf config = {
                 .ipv4 = NULL,
                 .ipv6 = NULL
         },
-        .check_public = false,
+        .use_stun = false,
         .stun_server = NULL,
         .stun_port = 0
 };
 
-struct l_uintset *success_ifs;
+struct l_uintset *whitelisted_ifs;
+struct l_uintset *blacklisted_ifs;
 
 static char const name[] = "net_check";
 
@@ -140,16 +146,16 @@ static void parse_config_list(struct l_settings *settings,
         l_strv_free(list);
 }
 
-static void parse_config_check_public(struct l_settings *settings,
+static void parse_config_use_stun(struct l_settings *settings,
                                       char const *group)
 {
-        bool check_public;
+        bool use_stun;
         if (l_settings_get_bool(settings,
                                 group,
-                                "check-public",
-                                &check_public)) {
+                                "use-stun",
+                                &use_stun)) {
 
-                config.check_public = check_public;
+                config.use_stun = use_stun;
         }
 }
 
@@ -183,7 +189,7 @@ static void parse_config(struct l_settings *settings, void *user_data)
 
         parse_config_list(settings, group, "blacklist", &config.blacklist);
 
-        parse_config_check_public(settings, group);
+        parse_config_use_stun(settings, group);
         
         parse_config_stun_server(settings, group);
 
@@ -253,7 +259,7 @@ static bool check_network_ipv4(struct l_queue *queue, struct in_addr const *addr
 
 static inline bool check_invalid_queue(struct l_queue *queue)
 {
-        return queue == NULL || l_queue_length(queue);
+        return queue == NULL || l_queue_length(queue) == 0;
 }
 
 static bool elem_collision(struct l_queue *q1, struct l_queue *q2)
@@ -285,7 +291,137 @@ static bool elem_collision(struct l_queue *q1, struct l_queue *q2)
         return false;
 }
 
+static void do_flood(struct mptcpd_interface const *i,
+                     struct sockaddr const *sa,
+                     struct mptcpd_pm *pm,
+                     flooding_function fun)
+{
+        struct l_queue_entry const *entry =
+                l_queue_get_entries(i->addrs);
+
+        while (entry) {
+
+                struct sockaddr const *sa2 = entry->data;
+
+                if (memcmp(sa2,
+                           sa,
+                           sizeof(struct sockaddr))) 
+                        fun(name, i, sa2, pm);
+                entry = entry->next;
+        }
+
+}
+
+//ugllllly
+static bool apply_check_ipv4(struct mptcpd_interface const *i,
+                             struct sockaddr const *sa,
+                             struct mptcpd_pm *pm,
+                             struct in_addr *ipv4)
+{
+        if (!l_queue_isempty(config.whitelist.ipv4)) { //has whitelist
+                if (check_network_ipv4(config.whitelist.ipv4, ipv4)) { //has match whitelist
+                        if (!check_network_ipv4(config.blacklist.ipv4, ipv4)) { // no blacklist or no match blacklist
+                                if (!l_uintset_contains(whitelisted_ifs, i->index)) { // already flooded
+                                        do_flood(i,
+                                                 sa,
+                                                 pm,
+                                                 mptcpd_plugin_new_local_address_flow);  //rename them maybe
+
+                                        l_uintset_put(whitelisted_ifs, i->index);
+                                }
+
+                               return true;
+
+                        } 
+
+                        do_flood(i,
+                                 sa,
+                                 pm,
+                                 mptcpd_plugin_delete_local_address_flow); //rename them maybe
+
+                        l_uintset_put(blacklisted_ifs, i->index);
+                }
+
+                return false;
+        }
+
+        if (!l_queue_isempty(config.blacklist.ipv4) && //only has blacklist
+            check_network_ipv4(config.blacklist.ipv4, ipv4)) {//has match blacklist
+                do_flood(i,
+                         sa,
+                         pm,
+                         mptcpd_plugin_delete_local_address_flow); //rename them maybe
+
+                l_uintset_put(blacklisted_ifs, i->index);
+
+                return false;
+        }
+
+        return l_uintset_contains(whitelisted_ifs, i->index) ||
+               l_queue_isempty(config.whitelist.ipv6);
+}
+
+//ugllllly x2
+static bool apply_check_ipv6(struct mptcpd_interface const *i,
+                             struct sockaddr const *sa,
+                             struct mptcpd_pm *pm,
+                             struct in6_addr *ipv6)
+{
+        if (!l_queue_isempty(config.whitelist.ipv6)) { //has whitelist
+                if (check_network_ipv6(config.whitelist.ipv6, ipv6)) { //has match whitelist
+                        if (!check_network_ipv6(config.blacklist.ipv6, ipv6)) { // no blacklist or no match blacklist
+                                if (!l_uintset_contains(whitelisted_ifs, i->index)) { // already flooded
+                                        do_flood(i,
+                                                 sa,
+                                                 pm,
+                                                 mptcpd_plugin_new_local_address_flow);  //rename them maybe
+
+                                        l_uintset_put(whitelisted_ifs, i->index);
+                                }
+
+                               return true;
+
+                        } 
+
+                        do_flood(i,
+                                 sa,
+                                 pm,
+                                 mptcpd_plugin_delete_local_address_flow); //rename them maybe
+
+                        l_uintset_put(blacklisted_ifs, i->index);
+                }
+
+                return false;
+        }
+
+        if (!l_queue_isempty(config.blacklist.ipv6) && //only has blacklist
+            check_network_ipv6(config.blacklist.ipv6, ipv6)) {//has match blacklist
+                do_flood(i,
+                         sa,
+                         pm,
+                         mptcpd_plugin_delete_local_address_flow); //rename them maybe
+
+                l_uintset_put(blacklisted_ifs, i->index);
+
+                return false;
+        }
+
+        return l_uintset_contains(whitelisted_ifs, i->index) ||
+               l_queue_isempty(config.whitelist.ipv4);
+}
+
 // ----------------------------------------------------------------------
+
+static bool net_check_delete_interface(struct mptcpd_interface const *i,
+                                       struct mptcpd_pm *pm)
+{
+        (void) pm;
+
+        l_uintset_take(whitelisted_ifs, i->index);
+        l_uintset_take(blacklisted_ifs, i->index);
+
+        return true;
+}
 
 static bool net_check_new_local_address(struct mptcpd_interface const *i,
                                         struct sockaddr const *sa,
@@ -293,14 +429,24 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
 {
         (void) pm;
 
-        if (l_uintset_contains(success_ifs, i->index))
+        l_info("New local address interface %u", i->index);
+        
+        if (l_uintset_contains(blacklisted_ifs, i->index))
+                return false;
+
+        l_info("Not blacklisted interface %u", i->index);
+
+        if (l_uintset_contains(whitelisted_ifs, i->index) &&
+            l_queue_isempty(config.blacklist.ipv4) &&
+            l_queue_isempty(config.blacklist.ipv6))
                 return true;
 
-        bool check;
+        l_info("Not whitelisted or with blacklist interface %u", i->index);
+
         if (sa->sa_family == AF_INET) {
                 struct in_addr *addr_pointer;
 
-                if (config.check_public) {
+                if (config.use_stun) {
                         struct in_addr addr;
                         if (!get_public_ipv4((char *) i->name, &addr)){
                                 l_info("failed to get ip");
@@ -311,48 +457,16 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
                         addr_pointer = 
                                 &((struct sockaddr_in *) sa)->sin_addr;
 
-                check = check_network_ipv4(config.whitelist.ipv4, 
-                                           addr_pointer) &&
-                        !check_network_ipv4(config.blacklist.ipv4,
-                                            addr_pointer);
-
-        } else {
-
-                struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) sa;
-
-                check = check_network_ipv6(config.whitelist.ipv6,
-                                           &sa6->sin6_addr) &&
-                        !check_network_ipv6(config.blacklist.ipv6,
-                                            &sa6->sin6_addr);
-
-        }
-        
-        if (check) {
-
-                struct l_queue_entry const *entry =
-                        l_queue_get_entries(i->addrs);
-
-                while (entry) {
-
-                        struct sockaddr const *sa2 = entry->data;
-
-                        if (memcmp(sa2,
-                                   sa,
-                                   sizeof(struct sockaddr))) 
-                                mptcpd_plugin_new_local_address_flow(name,
-                                                                     i,
-                                                                     sa2,
-                                                                     pm);
-                        entry = entry->next;
-                }
-
-                l_uintset_put(success_ifs, i->index);
+                return apply_check_ipv4(i, sa, pm, addr_pointer);
         }
 
-        return check;
+        struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) sa;
+
+        return apply_check_ipv6(i, sa, pm, &sa6->sin6_addr);
 }
  
 static struct mptcpd_plugin_ops const pm_ops = {
+        .delete_interface = net_check_delete_interface,
         .new_local_address = net_check_new_local_address,
 };
 
@@ -380,7 +494,7 @@ static int net_check_init(struct mptcpd_pm *pm)
                 return -1;
         }
 
-        if (config.check_public && 
+        if (config.use_stun && 
             (config.stun_server == NULL || 
              config.stun_port == 0)) {
                 //l_error
@@ -388,9 +502,10 @@ static int net_check_init(struct mptcpd_pm *pm)
                 return -1;
         }
 
-        success_ifs = l_uintset_new(USHRT_MAX);
+        whitelisted_ifs = l_uintset_new(USHRT_MAX);
+        blacklisted_ifs = l_uintset_new(USHRT_MAX);
 
-        if (config.check_public &&
+        if (config.use_stun &&
             !stun_client_init(config.stun_server, config.stun_port)) {
                 l_info("failed to init stun");
                 return -1;
@@ -411,10 +526,12 @@ static void net_check_exit(struct mptcpd_pm *pm)
 {
         (void) pm;
 
-        if (config.check_public)
+        if (config.use_stun)
                 stun_client_destroy();
 
-        l_uintset_free(success_ifs);
+        l_uintset_free(blacklisted_ifs);
+
+        l_uintset_free(whitelisted_ifs);
 
         l_free(config.stun_server);
 
