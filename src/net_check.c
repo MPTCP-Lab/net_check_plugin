@@ -42,11 +42,11 @@
 
 #define TCPOPT_MPTCP 30
 
-#define NFT_TABLE_NAME "net_check"
-#define NFT_CHAIN_IN_NAME "check_in"
-#define NFT_CHAIN_OUT_NAME "check_out"
+#define PLUGIN_NAME "net_check"
+#define CHAIN_IN_NAME "check_in"
+#define CHAIN_OUT_NAME "check_out"
 
-#define NFT_QUEUE_NUM 10 //dynamic??
+#define QUEUE_NUM 10 //dynamic??
 
 typedef void (*flooding_function) (char const *name,
                                    struct mptcpd_interface const *i,
@@ -101,8 +101,6 @@ struct conf config = {
 
 static struct l_uintset *whitelisted_ifs;
 static struct l_uintset *blacklisted_ifs;
-
-static char const name[] = "net_check"; //maybe macro
 
 static struct mnl_socket *so_rules;
 static struct mnl_socket *so_queue;
@@ -197,7 +195,6 @@ static struct nftnl_rule *create_rule(char const *const table,
                                       uint32_t if_index,
                                       uint16_t key)
 {
-
         struct nftnl_rule *r =
                 nftnl_rule_alloc();
 
@@ -229,7 +226,7 @@ static struct nftnl_rule *create_rule(char const *const table,
 
         add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, TH_SYN);
 
-        add_expr_queue(r, NFT_QUEUE_NUM);
+        add_expr_queue(r, QUEUE_NUM);
 
         return r;
 }
@@ -292,7 +289,7 @@ static void add_rule(char const *const table,
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 1");
                 return; //maybe return error
         }
 
@@ -357,7 +354,7 @@ static void add_table(char const *const table)
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 2");
                 return; //maybe return error
         }
 
@@ -427,7 +424,7 @@ static void add_chain(char const *const table,
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 3");
                 return; //maybe return error
         }
 
@@ -441,12 +438,12 @@ static int rule_cb(const struct nlmsghdr *nl, void *user_data)
 
 	r = nftnl_rule_alloc();
 	if (r == NULL) {
-		l_error("Error");
+		l_error("Error 4");
 		return MNL_CB_ERROR;
 	}
 
 	if (nftnl_rule_nlmsg_parse(nl, r) < 0) {
-		l_error("Error");
+		l_error("Error 5");
                 nftnl_rule_free(r);
 		return MNL_CB_ERROR;
 	}
@@ -457,23 +454,13 @@ static int rule_cb(const struct nlmsghdr *nl, void *user_data)
         struct nftnl_expr *expr =
                 nftnl_expr_iter_next(expr_it);
 
-        bool index_match = false;
-        while (expr) {
-                if (nftnl_expr_is_set(expr, data->key)) {
-                        index_match =
-                                nftnl_expr_get_u32(expr, data->key) !=
-                                data->index;
-                        break;
-                }
+        expr = nftnl_expr_iter_next(expr_it);
 
-                expr = nftnl_expr_iter_next(expr_it);
-        }
-
-        nftnl_expr_iter_destroy(expr_it);
-
-        if (index_match)
+        if (nftnl_expr_get_u32(expr, NFTNL_EXPR_CMP_DATA) == data->index)
                 data->handle =
                         nftnl_rule_get_u64(r, NFTNL_RULE_HANDLE);
+
+        nftnl_expr_iter_destroy(expr_it);
 
 	nftnl_rule_free(r);
 	return MNL_CB_OK;
@@ -484,7 +471,7 @@ static uint64_t get_handle(char const *const table,
                            uint32_t index,
                            uint16_t key)
 {
-        L_AUTO_FREE_VAR(uint8_t *, buf) =
+        L_AUTO_FREE_VAR(char *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
 
         struct nftnl_rule *r =
@@ -496,40 +483,22 @@ static uint64_t get_handle(char const *const table,
 
         uint32_t seq = time(NULL);
 
-        struct mnl_nlmsg_batch *batch =
-                mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
-
-        nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
-        mnl_nlmsg_batch_next(batch);
-
-        uint32_t rule_seq = seq;
-
         struct nlmsghdr *nl = nftnl_rule_nlmsg_build_hdr(
-                mnl_nlmsg_batch_current(batch),
+                buf,
                 NFT_MSG_GETRULE,
                 NFPROTO_INET,
                 NLM_F_DUMP,
-                seq++);
+                seq);
         
         nftnl_rule_nlmsg_build_payload(nl, r);
         nftnl_rule_free(r);
-        mnl_nlmsg_batch_next(batch);
-
-        nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
-        mnl_nlmsg_batch_next(batch);
 
         if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
+                              nl,
+                              nl->nlmsg_len) < 0) {
                 l_error("failed to send");
                 return 0; //maybe return error
         }
-
-        mnl_nlmsg_batch_stop(batch);
-
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
 
         struct get_handle_data data = {
                 .handle = 0,
@@ -537,15 +506,18 @@ static uint64_t get_handle(char const *const table,
                 .key = key
         };
 
+        ssize_t ret = mnl_socket_recvfrom(so_rules,
+                                          buf,
+                                          MNL_SOCKET_BUFFER_SIZE);
         while (ret > 0) {
                 ret = mnl_cb_run(buf,
                                  ret,
-                                 rule_seq,
+                                 seq,
                                  portid_rules,
                                  rule_cb,
                                  &data);
 
-                if (ret <= 0 || data.handle != 0)
+                if (ret <= 0)
                         break;
 
                 ret = mnl_socket_recvfrom(so_rules,
@@ -554,7 +526,7 @@ static uint64_t get_handle(char const *const table,
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 6");
                 return 0; //maybe return error
         }
 
@@ -593,7 +565,6 @@ static void del_rule(char const *const table,
 
         uint32_t rule_seq = seq;
 
-        //auto free
         struct nlmsghdr *nl = nftnl_rule_nlmsg_build_hdr(
                 mnl_nlmsg_batch_current(batch),
                 NFT_MSG_DELRULE,
@@ -630,7 +601,7 @@ static void del_rule(char const *const table,
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 7");
                 return; //maybe return error
         }
 
@@ -695,7 +666,7 @@ static void del_table(char const *const table)
         }
 
         if (ret == -1) {
-                l_error("Error");
+                l_error("Error 8");
                 return; //maybe return error
         }
 
@@ -942,7 +913,7 @@ static void do_flood(struct mptcpd_interface const *i,
                 if (memcmp(sa2,
                            sa,
                            sizeof(struct sockaddr))) 
-                        fun(name, i, sa2, pm);
+                        fun(PLUGIN_NAME, i, sa2, pm);
                 entry = entry->next;
         }
 
@@ -966,13 +937,13 @@ static bool apply_check_ipv4(struct mptcpd_interface const *i,
                                         l_uintset_put(whitelisted_ifs, i->index);
 
                                         if (l_uintset_contains(ruled_ifs, i->index)) {
-                                                del_rule(NFT_TABLE_NAME,
-                                                         NFT_CHAIN_IN_NAME,
+                                                del_rule(PLUGIN_NAME,
+                                                         CHAIN_IN_NAME,
                                                          i->index,
                                                          NFT_META_IIF);
 
-                                                del_rule(NFT_TABLE_NAME,
-                                                         NFT_CHAIN_OUT_NAME,
+                                                del_rule(PLUGIN_NAME,
+                                                         CHAIN_OUT_NAME,
                                                          i->index,
                                                          NFT_META_OIF);
 
@@ -993,14 +964,14 @@ static bool apply_check_ipv4(struct mptcpd_interface const *i,
                         if (!l_uintset_contains(ruled_ifs, i->index)) {
 
                                 //check if error occurred
-                                add_rule(NFT_TABLE_NAME,
-                                         NFT_CHAIN_IN_NAME,
+                                add_rule(PLUGIN_NAME,
+                                         CHAIN_IN_NAME,
                                          i->index,
                                          NFT_META_IIF);
                                 
                                 //check if error occurred
-                                add_rule(NFT_TABLE_NAME,
-                                         NFT_CHAIN_OUT_NAME,
+                                add_rule(PLUGIN_NAME,
+                                         CHAIN_OUT_NAME,
                                          i->index,
                                          NFT_META_OIF);
 
@@ -1023,14 +994,14 @@ static bool apply_check_ipv4(struct mptcpd_interface const *i,
                 if (!l_uintset_contains(ruled_ifs, i->index)) {
 
                         //check if error occurred
-                        add_rule(NFT_TABLE_NAME,
-                                 NFT_CHAIN_IN_NAME,
+                        add_rule(PLUGIN_NAME,
+                                 CHAIN_IN_NAME,
                                  i->index,
                                  NFT_META_IIF);
                         
                         //check if error occurred
-                        add_rule(NFT_TABLE_NAME,
-                                 NFT_CHAIN_OUT_NAME,
+                        add_rule(PLUGIN_NAME,
+                                 CHAIN_OUT_NAME,
                                  i->index,
                                  NFT_META_OIF);
                 }
@@ -1060,13 +1031,13 @@ static bool apply_check_ipv6(struct mptcpd_interface const *i,
                                         l_uintset_put(whitelisted_ifs, i->index);
 
                                         if (l_uintset_contains(ruled_ifs, i->index)) {
-                                                del_rule(NFT_TABLE_NAME,
-                                                         NFT_CHAIN_IN_NAME,
+                                                del_rule(PLUGIN_NAME,
+                                                         CHAIN_IN_NAME,
                                                          i->index,
                                                          NFT_META_IIF);
 
-                                                del_rule(NFT_TABLE_NAME,
-                                                         NFT_CHAIN_OUT_NAME,
+                                                del_rule(PLUGIN_NAME,
+                                                         CHAIN_OUT_NAME,
                                                          i->index,
                                                          NFT_META_OIF);
 
@@ -1087,14 +1058,14 @@ static bool apply_check_ipv6(struct mptcpd_interface const *i,
                         if (!l_uintset_contains(ruled_ifs, i->index)) {
 
                                 //check if error occurred
-                                add_rule(NFT_TABLE_NAME,
-                                         NFT_CHAIN_IN_NAME,
+                                add_rule(PLUGIN_NAME,
+                                         CHAIN_IN_NAME,
                                          i->index,
                                          NFT_META_IIF);
                                 
                                 //check if error occurred
-                                add_rule(NFT_TABLE_NAME,
-                                         NFT_CHAIN_OUT_NAME,
+                                add_rule(PLUGIN_NAME,
+                                         CHAIN_OUT_NAME,
                                          i->index,
                                          NFT_META_OIF);
 
@@ -1117,14 +1088,14 @@ static bool apply_check_ipv6(struct mptcpd_interface const *i,
                 if (!l_uintset_contains(ruled_ifs, i->index)) {
 
                         //check if error occurred
-                        add_rule(NFT_TABLE_NAME,
-                                 NFT_CHAIN_IN_NAME,
+                        add_rule(PLUGIN_NAME,
+                                 CHAIN_IN_NAME,
                                  i->index,
                                  NFT_META_IIF);
                         
                         //check if error occurred
-                        add_rule(NFT_TABLE_NAME,
-                                 NFT_CHAIN_OUT_NAME,
+                        add_rule(PLUGIN_NAME,
+                                 CHAIN_OUT_NAME,
                                  i->index,
                                  NFT_META_OIF);
                 }
@@ -1259,14 +1230,14 @@ static bool net_check_new_interface(struct mptcpd_interface const *i,
             return true;
 
         //check if error occurred
-        add_rule(NFT_TABLE_NAME,
-                 NFT_CHAIN_IN_NAME,
+        add_rule(PLUGIN_NAME,
+                 CHAIN_IN_NAME,
                  i->index,
                  NFT_META_IIF);
         
         //check if error occurred
-        add_rule(NFT_TABLE_NAME,
-                 NFT_CHAIN_OUT_NAME,
+        add_rule(PLUGIN_NAME,
+                 CHAIN_OUT_NAME,
                  i->index,
                  NFT_META_OIF);
 
@@ -1282,13 +1253,13 @@ static bool net_check_delete_interface(struct mptcpd_interface const *i,
 
         if (l_uintset_contains(ruled_ifs, i->index)){
 
-                del_rule(NFT_TABLE_NAME,
-                         NFT_CHAIN_IN_NAME,
+                del_rule(PLUGIN_NAME,
+                         CHAIN_IN_NAME,
                          i->index,
                          NFT_META_IIF);
 
-                del_rule(NFT_TABLE_NAME,
-                         NFT_CHAIN_OUT_NAME,
+                del_rule(PLUGIN_NAME,
+                         CHAIN_OUT_NAME,
                          i->index,
                          NFT_META_OIF);
 
@@ -1345,7 +1316,7 @@ static int net_check_init(struct mptcpd_pm *pm)
 
         //set up handler to read from queue and strip mptcp option
 
-        mptcpd_plugin_read_config(name, parse_config, NULL);
+        mptcpd_plugin_read_config(PLUGIN_NAME, parse_config, NULL);
 
         if (check_invalid_queue(config.whitelist.ipv4) &&
             check_invalid_queue(config.whitelist.ipv6) &&
@@ -1400,7 +1371,7 @@ static int net_check_init(struct mptcpd_pm *pm)
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
 
         struct nlmsghdr *nl =
-                nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, NFT_QUEUE_NUM);
+                nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
         nfq_nlmsg_cfg_put_cmd(nl, AF_INET, NFQNL_CFG_CMD_BIND);
 
         if (mnl_socket_sendto(so_queue, nl, nl->nlmsg_len) < 0) {
@@ -1408,7 +1379,7 @@ static int net_check_init(struct mptcpd_pm *pm)
                 return EXIT_FAILURE;
         }
 
-        nl = nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, NFT_QUEUE_NUM);
+        nl = nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
         nfq_nlmsg_cfg_put_params(nl, NFQNL_COPY_PACKET, 0xffff);
 
         mnl_attr_put_u32(nl, NFQA_CFG_FLAGS, htonl(NFQA_CFG_F_GSO));
@@ -1440,14 +1411,14 @@ static int net_check_init(struct mptcpd_pm *pm)
 
         ruled_ifs = l_uintset_new(USHRT_MAX);
 
-        add_table(NFT_TABLE_NAME);
+        add_table(PLUGIN_NAME);
 
-        add_chain(NFT_TABLE_NAME, NFT_CHAIN_IN_NAME, NF_INET_LOCAL_IN);
-        add_chain(NFT_TABLE_NAME, NFT_CHAIN_OUT_NAME, NF_INET_LOCAL_OUT);
+        add_chain(PLUGIN_NAME, CHAIN_IN_NAME, NF_INET_LOCAL_IN);
+        add_chain(PLUGIN_NAME, CHAIN_OUT_NAME, NF_INET_LOCAL_OUT);
         (void) add_chain;
 
-        if (!mptcpd_plugin_register_ops(name, &pm_ops)) {
-                l_error("Failed to initialize plugin '%s'.", name);
+        if (!mptcpd_plugin_register_ops(PLUGIN_NAME, &pm_ops)) {
+                l_error("Failed to initialize plugin '%s'.", PLUGIN_NAME);
                 //clean
                 return EXIT_FAILURE;
         }
@@ -1461,7 +1432,7 @@ static void net_check_exit(struct mptcpd_pm *pm)
 {
         (void) pm;
 
-        del_table(NFT_TABLE_NAME);
+        del_table(PLUGIN_NAME);
 
         l_uintset_free(ruled_ifs);
 
