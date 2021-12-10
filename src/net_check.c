@@ -71,6 +71,12 @@ struct net_queues {
         struct l_queue *ipv6;
 };
 
+struct get_handle_data {
+        uint64_t handle;
+        uint32_t index;
+        uint16_t key;
+};
+
 struct conf {
         struct net_queues whitelist;
         struct net_queues blacklist;
@@ -79,11 +85,16 @@ struct conf {
         uint16_t stun_port;
 };
 
-struct get_handle_data {
-        uint64_t handle;
-        uint32_t index;
-        uint16_t key;
-};
+static struct mnl_socket *so_rules;
+static struct mnl_socket *so_queue;
+
+static uint32_t portid_rules;
+static uint32_t portid_queue;
+
+static struct l_uintset *whitelisted_ifs;
+static struct l_uintset *blacklisted_ifs;
+
+static struct l_uintset *ruled_ifs;
 
 struct conf config = {
         .whitelist = {
@@ -99,19 +110,7 @@ struct conf config = {
         .stun_port = 0
 };
 
-static struct l_uintset *whitelisted_ifs;
-static struct l_uintset *blacklisted_ifs;
-
-static struct mnl_socket *so_rules;
-static struct mnl_socket *so_queue;
-
-static uint32_t portid_rules;
-static uint32_t portid_queue;
-
-static struct l_uintset *ruled_ifs;
-
 // ----------------------------------------------------------------------
-
 
 static void add_expr_meta(struct nftnl_rule *rule,
                           uint8_t reg,
@@ -119,6 +118,12 @@ static void add_expr_meta(struct nftnl_rule *rule,
 {
         struct nftnl_expr *expr =
                 nftnl_expr_alloc("meta");
+
+        if (expr == NULL) {
+                nftnl_rule_free(rule);
+                l_error("failed to allocate rule expression");
+                abort();
+        }
 
         nftnl_expr_set_u32(expr, NFTNL_EXPR_META_DREG, reg);
         nftnl_expr_set_u32(expr, NFTNL_EXPR_META_KEY, key);
@@ -133,6 +138,12 @@ static void add_expr_cmp(struct nftnl_rule *rule,
 {
         struct nftnl_expr *expr =
                 nftnl_expr_alloc("cmp");
+
+        if (expr == NULL) {
+                nftnl_rule_free(rule);
+                l_error("failed to allocate rule expression");
+                abort();
+        }
 
         nftnl_expr_set_u32(expr, NFTNL_EXPR_CMP_SREG, reg);
         nftnl_expr_set_u32(expr, NFTNL_EXPR_CMP_OP, op);
@@ -151,6 +162,12 @@ static void add_expr_exthdr(struct nftnl_rule *rule,
 {
         struct nftnl_expr *expr =
                 nftnl_expr_alloc("exthdr");
+
+        if (expr == NULL) {
+                nftnl_rule_free(rule);
+                l_error("failed to allocate rule expression");
+                abort();
+        }
 
         nftnl_expr_set_u32(expr, NFTNL_EXPR_EXTHDR_DREG, reg);
         nftnl_expr_set_u8(expr, NFTNL_EXPR_EXTHDR_TYPE, type);
@@ -171,6 +188,12 @@ static void add_expr_payload(struct nftnl_rule *rule,
         struct nftnl_expr *expr =
                 nftnl_expr_alloc("payload");
 
+        if (expr == NULL) {
+                nftnl_rule_free(rule);
+                l_error("failed to allocate rule expression");
+                abort();
+        }
+
         nftnl_expr_set_u32(expr, NFTNL_EXPR_PAYLOAD_DREG, reg);
         nftnl_expr_set_u32(expr, NFTNL_EXPR_PAYLOAD_BASE, base);
         nftnl_expr_set_u32(expr, NFTNL_EXPR_PAYLOAD_OFFSET, offset);
@@ -185,6 +208,13 @@ static void add_expr_queue(struct nftnl_rule *rule,
 {
         struct nftnl_expr *expr =
                 nftnl_expr_alloc("queue");
+
+        if (expr == NULL) {
+                nftnl_rule_free(rule);
+                l_error("failed to allocate rule expression");
+                abort();
+        }
+
         nftnl_expr_set_u16(expr, NFTNL_EXPR_QUEUE_NUM, queue);
 
         nftnl_rule_add_expr(rule, expr);
@@ -198,6 +228,11 @@ static struct nftnl_rule *create_rule(char const *const table,
         struct nftnl_rule *r =
                 nftnl_rule_alloc();
 
+        if (r == NULL) {
+                l_error("failed to allocate rule");
+                abort();
+        }
+
         nftnl_rule_set_u32(r, NFTNL_RULE_FAMILY, NFPROTO_INET);
         nftnl_rule_set_str(r, NFTNL_RULE_TABLE, table);
         nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, chain);
@@ -205,30 +240,54 @@ static struct nftnl_rule *create_rule(char const *const table,
         add_expr_meta(r, NFT_REG_1, key);
         add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, if_index);
 
-        add_expr_meta(r, NFT_REG_1, NFT_META_L4PROTO);
-        add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, IPPROTO_TCP);
+	add_expr_meta(r, NFT_REG_1, NFT_META_L4PROTO);
+	add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, IPPROTO_TCP);
 
-        add_expr_exthdr(r,
+	add_expr_exthdr(r,
                         NFT_REG_1,
                         TCPOPT_MPTCP,
                         NFT_EXTHDR_OP_TCPOPT,
                         0,
                         sizeof(uint8_t),
                         NFT_EXTHDR_F_PRESENT);
-        
-        add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, true);
+	add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, true);
 
-        add_expr_payload(r,
-                         NFT_REG_1,
-                         NFT_PAYLOAD_TRANSPORT_HEADER,
-                         offsetof(struct tcphdr, th_flags),
-                         sizeof(uint8_t));
+	add_expr_payload(r,
+                              NFT_REG_1,
+                              NFT_PAYLOAD_TRANSPORT_HEADER,
+                              offsetof(struct tcphdr, th_flags),
+                              sizeof(uint8_t));
+	add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, TH_SYN);
 
-        add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, TH_SYN);
-
-        add_expr_queue(r, QUEUE_NUM);
+	add_expr_queue(r, QUEUE_NUM);
 
         return r;
+}
+
+static ssize_t nft_communication(void *buf,
+                                 size_t len,
+                                 uint32_t seq,
+                                 mnl_cb_t fun,
+                                 void *data)
+{
+        if (mnl_socket_sendto(so_rules, buf, len) < 0) {
+                l_error("failed to send");
+                return -1; //maybe return error
+        }
+
+        ssize_t ret = mnl_socket_recvfrom(so_rules,
+                                          buf,
+                                          MNL_SOCKET_BUFFER_SIZE);
+        while (ret > 0) {
+                ret = mnl_cb_run(buf, ret, seq, portid_rules, fun, data);
+                if (ret <= 0)
+                        break;
+                ret = mnl_socket_recvfrom(so_rules,
+                                          buf,
+                                          MNL_SOCKET_BUFFER_SIZE);
+        }
+
+        return ret;
 }
 
 static void add_rule(char const *const table,
@@ -246,6 +305,12 @@ static void add_rule(char const *const table,
 
         struct mnl_nlmsg_batch *batch =
                 mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
+
+        if (batch == NULL) {
+                nftnl_rule_free(r);
+                l_error("failed to start batch");
+                abort();
+        }
 
         nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
@@ -267,33 +332,11 @@ static void add_rule(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
-                l_error("failed to send");
-                return; //maybe return error
-        }
+        nft_communication(buf, nl->nlmsg_len, rule_seq, NULL, NULL);
 
         mnl_nlmsg_batch_stop(batch);
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf, ret, rule_seq, portid_rules, NULL, NULL);
-                if (ret <= 0)
-                        break;
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
-
-        if (ret == -1) {
-                l_error("Error 1");
-                return; //maybe return error
-        }
-
-        //maybe return success
+        //maybe return success or failure/error
 }
 
 static void add_table(char const *const table)
@@ -303,6 +346,12 @@ static void add_table(char const *const table)
 
         struct nftnl_table *t =
                 nftnl_table_alloc();
+
+        if (t == NULL) {
+                l_error("failed to allocate table");
+                abort();
+        }
+
         nftnl_table_set_u32(t, NFTNL_TABLE_FAMILY, NFPROTO_INET);
         nftnl_table_set_str(t, NFTNL_TABLE_NAME, table);
 
@@ -310,6 +359,12 @@ static void add_table(char const *const table)
 
         struct mnl_nlmsg_batch *batch =
                 mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
+
+        if (batch == NULL) {
+                nftnl_table_free(t);
+                l_error("failed to start batch");
+                abort();
+        }
 
         nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
@@ -331,34 +386,11 @@ static void add_table(char const *const table)
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        //always the same maybe separate it
-        if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
-                l_error("failed to send");
-                return; //maybe return error
-        }
+        nft_communication(buf, nl->nlmsg_len, table_seq, NULL, NULL);
 
         mnl_nlmsg_batch_stop(batch);
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf, ret, table_seq, portid_rules, NULL, NULL);
-                if (ret <= 0)
-                        break;
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
-
-        if (ret == -1) {
-                l_error("Error 2");
-                return; //maybe return error
-        }
-
-        //maybe return success
+        //maybe return success or failure/error
 }
 
 static void add_chain(char const *const table,
@@ -370,6 +402,12 @@ static void add_chain(char const *const table,
 
         struct nftnl_chain *c =
                 nftnl_chain_alloc();
+
+        if (c == NULL) {
+                l_error("failed to allocate chain");
+                abort();
+        }
+
         nftnl_chain_set_u32(c, NFTNL_CHAIN_FAMILY, NFPROTO_INET);
         nftnl_chain_set_str(c, NFTNL_CHAIN_TABLE, table);
         nftnl_chain_set_str(c, NFTNL_CHAIN_NAME, chain);
@@ -380,6 +418,12 @@ static void add_chain(char const *const table,
 
         struct mnl_nlmsg_batch *batch =
                 mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
+
+        if (batch == NULL) {
+                nftnl_chain_free(c);
+                l_error("failed to start batch");
+                abort();
+        }
 
         nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
@@ -401,34 +445,11 @@ static void add_chain(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        //always the same maybe separate it
-        if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
-                l_error("failed to send");
-                return; //maybe return error
-        }
+        nft_communication(buf, nl->nlmsg_len, chain_seq, NULL, NULL);
 
         mnl_nlmsg_batch_stop(batch);
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf, ret, chain_seq, portid_rules, NULL, NULL);
-                if (ret <= 0)
-                        break;
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
-
-        if (ret == -1) {
-                l_error("Error 3");
-                return; //maybe return error
-        }
-
-        //maybe return success
+        //maybe return success or failure/error
 }
 
 static int rule_cb(const struct nlmsghdr *nl, void *user_data)
@@ -437,19 +458,23 @@ static int rule_cb(const struct nlmsghdr *nl, void *user_data)
 	struct get_handle_data *data = user_data;
 
 	r = nftnl_rule_alloc();
-	if (r == NULL) {
-		l_error("Error 4");
-		return MNL_CB_ERROR;
-	}
+        if (r == NULL) {
+                l_error("failed to allocate rule");
+                abort();
+        }
 
 	if (nftnl_rule_nlmsg_parse(nl, r) < 0) {
-		l_error("Error 5");
                 nftnl_rule_free(r);
 		return MNL_CB_ERROR;
 	}
 
         struct nftnl_expr_iter *expr_it =
                 nftnl_expr_iter_create(r);
+        if (expr_it == NULL) {
+                nftnl_rule_free(r);
+                l_error("failed to allocate rule expression iterator");
+                abort();
+        }
 
         struct nftnl_expr *expr =
                 nftnl_expr_iter_next(expr_it);
@@ -457,8 +482,7 @@ static int rule_cb(const struct nlmsghdr *nl, void *user_data)
         expr = nftnl_expr_iter_next(expr_it);
 
         if (nftnl_expr_get_u32(expr, NFTNL_EXPR_CMP_DATA) == data->index)
-                data->handle =
-                        nftnl_rule_get_u64(r, NFTNL_RULE_HANDLE);
+                data->handle = nftnl_rule_get_u64(r, NFTNL_RULE_HANDLE);
 
         nftnl_expr_iter_destroy(expr_it);
 
@@ -477,6 +501,11 @@ static uint64_t get_handle(char const *const table,
         struct nftnl_rule *r =
                 nftnl_rule_alloc();
 
+        if (r == NULL) {
+                l_error("failed to allocate rule");
+                abort();
+        }
+
         nftnl_rule_set_u32(r, NFTNL_RULE_FAMILY, NFPROTO_INET);
         nftnl_rule_set_str(r, NFTNL_RULE_TABLE, table);
         nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, chain);
@@ -493,40 +522,19 @@ static uint64_t get_handle(char const *const table,
         nftnl_rule_nlmsg_build_payload(nl, r);
         nftnl_rule_free(r);
 
-        if (mnl_socket_sendto(so_rules, 
-                              nl,
-                              nl->nlmsg_len) < 0) {
-                l_error("failed to send");
-                return 0; //maybe return error
-        }
-
         struct get_handle_data data = {
                 .handle = 0,
                 .index = index,
                 .key = key
         };
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf,
-                                 ret,
-                                 seq,
-                                 portid_rules,
-                                 rule_cb,
-                                 &data);
-
-                if (ret <= 0)
-                        break;
-
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
+        ssize_t ret = nft_communication(buf,
+                                        nl->nlmsg_len,
+                                        seq,
+                                        rule_cb,
+                                        &data);
 
         if (ret == -1) {
-                l_error("Error 6");
                 return 0; //maybe return error
         }
 
@@ -550,6 +558,11 @@ static void del_rule(char const *const table,
         struct nftnl_rule *r =
                 nftnl_rule_alloc();
 
+        if (r == NULL) {
+                l_error("failed to allocate rule");
+                abort();
+        }
+
         nftnl_rule_set_u32(r, NFTNL_RULE_FAMILY, NFPROTO_INET);
         nftnl_rule_set_str(r, NFTNL_RULE_TABLE, table);
         nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, chain);
@@ -559,6 +572,12 @@ static void del_rule(char const *const table,
 
         struct mnl_nlmsg_batch *batch =
                 mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
+
+        if (batch == NULL) {
+                nftnl_rule_free(r);
+                l_error("failed to start batch");
+                abort();
+        }
 
         nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
@@ -579,33 +598,11 @@ static void del_rule(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
-                l_error("failed to send");
-                return; //maybe return error
-        }
+        nft_communication(buf, nl->nlmsg_len, rule_seq, NULL, NULL);
 
         mnl_nlmsg_batch_stop(batch);
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf, ret, rule_seq, portid_rules, NULL, NULL);
-                if (ret <= 0)
-                        break;
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
-
-        if (ret == -1) {
-                l_error("Error 7");
-                return; //maybe return error
-        }
-
-        //maybe return success
+        //maybe return success or failure/error
 }
 
 static void del_table(char const *const table)
@@ -615,6 +612,12 @@ static void del_table(char const *const table)
 
         struct nftnl_table *t =
                 nftnl_table_alloc();
+
+        if (t == NULL) {
+                l_error("failed to allocate table");
+                abort();
+        }
+
         nftnl_table_set_u32(t, NFTNL_TABLE_FAMILY, NFPROTO_INET);
         nftnl_table_set_str(t, NFTNL_TABLE_NAME, table);
 
@@ -622,6 +625,12 @@ static void del_table(char const *const table)
 
         struct mnl_nlmsg_batch *batch =
                 mnl_nlmsg_batch_start(buf, MNL_SOCKET_BUFFER_SIZE);
+
+        if (batch == NULL) {
+                nftnl_table_free(t);
+                l_error("failed to start batch");
+                abort();
+        }
 
         nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
@@ -643,34 +652,11 @@ static void del_table(char const *const table)
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        //always the same maybe separate it
-        if (mnl_socket_sendto(so_rules, 
-                              mnl_nlmsg_batch_head(batch),
-                              mnl_nlmsg_batch_size(batch)) < 0) {
-                l_error("failed to send");
-                return; //maybe return error
-        }
+        nft_communication(buf, nl->nlmsg_len, table_seq, NULL, NULL);
 
         mnl_nlmsg_batch_stop(batch);
 
-        ssize_t ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        while (ret > 0) {
-                ret = mnl_cb_run(buf, ret, table_seq, portid_rules, NULL, NULL);
-                if (ret <= 0)
-                        break;
-                ret = mnl_socket_recvfrom(so_rules,
-                                          buf,
-                                          MNL_SOCKET_BUFFER_SIZE);
-        }
-
-        if (ret == -1) {
-                l_error("Error 8");
-                return; //maybe return error
-        }
-
-        //maybe return success
+        //maybe return success or failure/error
 }
 
 static bool get_address_mask(char *mask, uint8_t *max_out)
@@ -792,9 +778,15 @@ static void parse_config(struct l_settings *settings, void *user_data)
 
         static char group[] = "core";
 
-        parse_config_list(settings, group, "whitelist", &config.whitelist);
+        parse_config_list(settings,
+                          group,
+                          "whitelist",
+                          &config.whitelist);
 
-        parse_config_list(settings, group, "blacklist", &config.blacklist);
+        parse_config_list(settings,
+                          group,
+                          "blacklist",
+                          &config.blacklist);
 
         parse_config_use_stun(settings, group);
         
@@ -803,12 +795,24 @@ static void parse_config(struct l_settings *settings, void *user_data)
         parse_config_stun_port(settings, group);
 }
 
+static void config_destroy(void)
+{
+        l_free(config.stun_server);
+
+        l_queue_destroy(config.blacklist.ipv6, l_free);
+        l_queue_destroy(config.whitelist.ipv4, l_free);
+
+        l_queue_destroy(config.blacklist.ipv6, l_free);
+        l_queue_destroy(config.whitelist.ipv4, l_free);
+}
+
 static inline uint16_t calc_bit_mask(uint8_t mask_remainder)
 {
         return ((2 << (mask_remainder - 1)) - 1) << (8 - mask_remainder);
 }
 
-static bool check_network_ipv6(struct l_queue *queue, struct in6_addr const *addr)
+static bool check_network_ipv6(struct l_queue *queue,
+                               struct in6_addr const *addr)
 {
         uint8_t const *addr6 = addr->__in6_u.__u6_addr8;
 
@@ -845,7 +849,8 @@ static bool check_network_ipv6(struct l_queue *queue, struct in6_addr const *add
         return false;
 }
 
-static bool check_network_ipv4(struct l_queue *queue, struct in_addr const *addr)
+static bool check_network_ipv4(struct l_queue *queue,
+                               struct in_addr const *addr)
 {
         struct l_queue_entry const *entry =
                 l_queue_get_entries(queue);
@@ -919,92 +924,91 @@ static void do_flood(struct mptcpd_interface const *i,
 
 }
 
-//ugllllly
+static void allow_mptcp(struct mptcpd_interface const *i,
+                        struct sockaddr const *sa,
+                        struct mptcpd_pm *pm)
+{
+        if (!l_uintset_contains(whitelisted_ifs, i->index)) {
+                do_flood(i,
+                         sa,
+                         pm,
+                         mptcpd_plugin_new_local_address_flow);
+
+                l_uintset_put(whitelisted_ifs, i->index);
+
+                if (l_uintset_contains(ruled_ifs, i->index)) {
+                        del_rule(PLUGIN_NAME,
+                                 CHAIN_IN_NAME,
+                                 i->index,
+                                 NFT_META_IIF);
+
+                        del_rule(PLUGIN_NAME,
+                                 CHAIN_OUT_NAME,
+                                 i->index,
+                                 NFT_META_OIF);
+
+                        l_uintset_take(ruled_ifs, i->index);
+                }
+        }
+}
+
+static void block_mptcp(struct mptcpd_interface const *i,
+                        struct sockaddr const *sa,
+                        struct mptcpd_pm *pm,
+                        bool to_insert)
+{
+        do_flood(i,
+                 sa,
+                 pm,
+                 mptcpd_plugin_delete_local_address_flow);
+
+        if (to_insert)
+                l_uintset_put(blacklisted_ifs, i->index);
+
+        if (!l_uintset_contains(ruled_ifs, i->index)) {
+                //check if error occurred
+                add_rule(PLUGIN_NAME,
+                         CHAIN_IN_NAME,
+                         i->index,
+                         NFT_META_IIF);
+
+                //check if error occurred
+                add_rule(PLUGIN_NAME,
+                         CHAIN_OUT_NAME,
+                         i->index,
+                         NFT_META_OIF);
+
+                l_uintset_put(ruled_ifs, i->index);
+        }
+}
+
+//can probably be simplified
 static bool apply_check_ipv4(struct mptcpd_interface const *i,
                              struct sockaddr const *sa,
                              struct mptcpd_pm *pm,
                              struct in_addr *ipv4)
 {
-        if (!l_queue_isempty(config.whitelist.ipv4)) { //has whitelist
-                if (check_network_ipv4(config.whitelist.ipv4, ipv4)) { //has match whitelist
-                        if (!check_network_ipv4(config.blacklist.ipv4, ipv4)) { // no blacklist or no match blacklist
-                                if (!l_uintset_contains(whitelisted_ifs, i->index)) { // already flooded
-                                        do_flood(i,
-                                                 sa,
-                                                 pm,
-                                                 mptcpd_plugin_new_local_address_flow);  //rename them maybe
+        if (!l_queue_isempty(config.whitelist.ipv4)) {
 
-                                        l_uintset_put(whitelisted_ifs, i->index);
+                bool blacklisted =
+                        check_network_ipv4(config.blacklist.ipv4, ipv4);
 
-                                        if (l_uintset_contains(ruled_ifs, i->index)) {
-                                                del_rule(PLUGIN_NAME,
-                                                         CHAIN_IN_NAME,
-                                                         i->index,
-                                                         NFT_META_IIF);
+                if (check_network_ipv4(config.whitelist.ipv4, ipv4) &&
+                    !blacklisted) {
+                        
+                        allow_mptcp(i, sa, pm);
 
-                                                del_rule(PLUGIN_NAME,
-                                                         CHAIN_OUT_NAME,
-                                                         i->index,
-                                                         NFT_META_OIF);
+                        return true;
+                } 
 
-                                                l_uintset_take(ruled_ifs, i->index);
-                                        }
-                                }
-
-                                return true;
-                        } 
-
-                        do_flood(i,
-                                 sa,
-                                 pm,
-                                 mptcpd_plugin_delete_local_address_flow); //rename them maybe
-
-                        l_uintset_put(blacklisted_ifs, i->index);
-
-                        if (!l_uintset_contains(ruled_ifs, i->index)) {
-
-                                //check if error occurred
-                                add_rule(PLUGIN_NAME,
-                                         CHAIN_IN_NAME,
-                                         i->index,
-                                         NFT_META_IIF);
-                                
-                                //check if error occurred
-                                add_rule(PLUGIN_NAME,
-                                         CHAIN_OUT_NAME,
-                                         i->index,
-                                         NFT_META_OIF);
-
-                                l_uintset_put(ruled_ifs, i->index);
-                        }
-                }
+                block_mptcp(i, sa, pm, blacklisted);
 
                 return false;
         }
 
-        if (!l_queue_isempty(config.blacklist.ipv4) && //only has blacklist
-            check_network_ipv4(config.blacklist.ipv4, ipv4)) {//has match blacklist
-                do_flood(i,
-                         sa,
-                         pm,
-                         mptcpd_plugin_delete_local_address_flow); //rename them maybe
-
-                l_uintset_put(blacklisted_ifs, i->index);
-
-                if (!l_uintset_contains(ruled_ifs, i->index)) {
-
-                        //check if error occurred
-                        add_rule(PLUGIN_NAME,
-                                 CHAIN_IN_NAME,
-                                 i->index,
-                                 NFT_META_IIF);
-                        
-                        //check if error occurred
-                        add_rule(PLUGIN_NAME,
-                                 CHAIN_OUT_NAME,
-                                 i->index,
-                                 NFT_META_OIF);
-                }
+        if (!l_queue_isempty(config.blacklist.ipv4) &&
+            check_network_ipv4(config.blacklist.ipv4, ipv4)) {
+                block_mptcp(i, sa, pm, true);
 
                 return false;
         }
@@ -1013,92 +1017,32 @@ static bool apply_check_ipv4(struct mptcpd_interface const *i,
                l_queue_isempty(config.whitelist.ipv6);
 }
 
-//ugllllly x2
+//can probably be simplified
 static bool apply_check_ipv6(struct mptcpd_interface const *i,
                              struct sockaddr const *sa,
                              struct mptcpd_pm *pm,
                              struct in6_addr *ipv6)
 {
-        if (!l_queue_isempty(config.whitelist.ipv6)) { //has whitelist
-                if (check_network_ipv6(config.whitelist.ipv6, ipv6)) { //has match whitelist
-                        if (!check_network_ipv6(config.blacklist.ipv6, ipv6)) { // no blacklist or no match blacklist
-                                if (!l_uintset_contains(whitelisted_ifs, i->index)) { // already flooded
-                                        do_flood(i,
-                                                 sa,
-                                                 pm,
-                                                 mptcpd_plugin_new_local_address_flow);  //rename them maybe
+        if (!l_queue_isempty(config.whitelist.ipv6)) {
+                bool blacklisted =
+                        check_network_ipv6(config.blacklist.ipv6, ipv6);
 
-                                        l_uintset_put(whitelisted_ifs, i->index);
-
-                                        if (l_uintset_contains(ruled_ifs, i->index)) {
-                                                del_rule(PLUGIN_NAME,
-                                                         CHAIN_IN_NAME,
-                                                         i->index,
-                                                         NFT_META_IIF);
-
-                                                del_rule(PLUGIN_NAME,
-                                                         CHAIN_OUT_NAME,
-                                                         i->index,
-                                                         NFT_META_OIF);
-
-                                                l_uintset_take(ruled_ifs, i->index);
-                                        }
-                                }
-
-                                return true;
-                        } 
-
-                        do_flood(i,
-                                 sa,
-                                 pm,
-                                 mptcpd_plugin_delete_local_address_flow); //rename them maybe
-
-                        l_uintset_put(blacklisted_ifs, i->index);
+                if (check_network_ipv6(config.whitelist.ipv6, ipv6) &&
+                    !blacklisted) {
                         
-                        if (!l_uintset_contains(ruled_ifs, i->index)) {
+                        allow_mptcp(i, sa, pm);
 
-                                //check if error occurred
-                                add_rule(PLUGIN_NAME,
-                                         CHAIN_IN_NAME,
-                                         i->index,
-                                         NFT_META_IIF);
-                                
-                                //check if error occurred
-                                add_rule(PLUGIN_NAME,
-                                         CHAIN_OUT_NAME,
-                                         i->index,
-                                         NFT_META_OIF);
+                        return true;
+                } 
 
-                                l_uintset_put(ruled_ifs, i->index);
-                        }
-                }
+                block_mptcp(i, sa, pm, blacklisted);
 
                 return false;
         }
 
-        if (!l_queue_isempty(config.blacklist.ipv6) && //only has blacklist
-            check_network_ipv6(config.blacklist.ipv6, ipv6)) {//has match blacklist
-                do_flood(i,
-                         sa,
-                         pm,
-                         mptcpd_plugin_delete_local_address_flow); //rename them maybe
-
-                l_uintset_put(blacklisted_ifs, i->index);
-                
-                if (!l_uintset_contains(ruled_ifs, i->index)) {
-
-                        //check if error occurred
-                        add_rule(PLUGIN_NAME,
-                                 CHAIN_IN_NAME,
-                                 i->index,
-                                 NFT_META_IIF);
-                        
-                        //check if error occurred
-                        add_rule(PLUGIN_NAME,
-                                 CHAIN_OUT_NAME,
-                                 i->index,
-                                 NFT_META_OIF);
-                }
+        if (!l_queue_isempty(config.blacklist.ipv6) &&
+            check_network_ipv6(config.blacklist.ipv6, ipv6)) {
+                block_mptcp(i, sa, pm, true);
 
                 return false;
         }
@@ -1107,56 +1051,41 @@ static bool apply_check_ipv6(struct mptcpd_interface const *i,
                l_queue_isempty(config.whitelist.ipv4);
 }
 
-static int queue_cb(struct nlmsghdr const *nl, void *data)
+static bool strip_mptcp(struct pkt_buff *pkt, uint8_t family)
 {
-        (void) data;
-
-        struct nlattr *attr[NFQA_MAX + 1] = {0};
-
-        if (nfq_nlmsg_parse(nl, attr) < 0) {
-                l_error("parse error");
-                return MNL_CB_ERROR;
-        }
-
-        if (attr[NFQA_PACKET_HDR] == NULL) {
-                l_error("metaheader null");
-                return MNL_CB_ERROR;
-        }
-
-        struct nfqnl_msg_packet_hdr *ph =
-                mnl_attr_get_payload(attr[NFQA_PACKET_HDR]);
-
-        int family = ntohs(ph->hw_protocol) == ETHERTYPE_IP ?
-                     AF_INET :
-                     AF_INET6;
-
-        void *payload = mnl_attr_get_payload(attr[NFQA_PAYLOAD]);
-        uint16_t plen = mnl_attr_get_payload_len(attr[NFQA_PAYLOAD]);
-
-        struct pkt_buff *pkt = pktb_alloc(family, payload, plen, 0xff);
-
         void *pointer;
         if (family == AF_INET) {
                 pointer = nfq_ip_get_hdr(pkt);
                 nfq_ip_set_transport_header(pkt, pointer);
         } else {
                 pointer = nfq_ip6_get_hdr(pkt);
-                nfq_ip6_set_transport_header(pkt, pointer,(uint8_t) IPPROTO_TCP);
+                nfq_ip6_set_transport_header(pkt,
+                                             pointer,
+                                             (uint8_t) IPPROTO_TCP);
         }
 
         struct tcphdr *tcph = nfq_tcp_get_hdr(pkt);
 
+        if (tcph == NULL)
+                return false;
+
         uint8_t *options = (uint8_t *) tcph + sizeof(struct tcphdr);
+
         struct tcpoption *tcpopt = (struct tcpoption *) options;
+
         while (options) {
                 if (tcpopt->kind == TCPOPT_EOL)
-                        return MNL_CB_ERROR;
+                        return false;
+
                 else if (tcpopt->kind == 30)
                         break;
+
                 else if (tcpopt->kind == TCPOPT_NOP)
                         options++;
+
                 else
                         options += tcpopt->length;
+
                 tcpopt = (struct tcpoption *) options;
         }
 
@@ -1167,28 +1096,99 @@ static int queue_cb(struct nlmsghdr const *nl, void *data)
         uint16_t ip_len = (uint8_t *) tcph - (uint8_t *) pointer;
 
         if (family == AF_INET) {
-                nfq_ip_mangle(pkt, ip_len, offset, tcpopt->length, nop, tcpopt->length);
+                nfq_ip_mangle(pkt,
+                              ip_len,
+                              offset,
+                              tcpopt->length,
+                              nop,
+                              tcpopt->length);
                 nfq_tcp_compute_checksum_ipv4(tcph, pointer);
         }else {
-                nfq_ip6_mangle(pkt, ip_len, offset, tcpopt->length, nop, tcpopt->length);
+                nfq_ip6_mangle(pkt,
+                               ip_len,
+                               offset,
+                               tcpopt->length,
+                               nop,
+                               tcpopt->length);
                 nfq_tcp_compute_checksum_ipv6(tcph, pointer);
         }
 
+        return true;
+}
+
+static int send_verdict(struct nlmsghdr const *nl,
+                        struct nfqnl_msg_packet_hdr const *ph,
+                        struct pkt_buff *pkt)
+{
         L_AUTO_FREE_VAR(char *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
 
         struct nfgenmsg *nfg = mnl_nlmsg_get_payload(nl);
-        struct nlmsghdr *nlh = nfq_nlmsg_put(buf, NFQNL_MSG_VERDICT, ntohs(nfg->res_id));
+        struct nlmsghdr *nlh = nfq_nlmsg_put(buf,
+                                             NFQNL_MSG_VERDICT,
+                                             ntohs(nfg->res_id));
 
         nfq_nlmsg_verdict_put(nlh, ntohl(ph->packet_id), NF_ACCEPT);
         nfq_nlmsg_verdict_put_pkt(nlh, pktb_data(pkt), pktb_len(pkt));
+        pktb_free(pkt);
 
         if (mnl_socket_sendto(so_queue, nlh, nlh->nlmsg_len) < 0) {
-                perror("mnl_socket_send");
-                exit(EXIT_FAILURE);
+                l_error("failed to send verdict");
+                return MNL_CB_ERROR;
         }
 
         return MNL_CB_OK;
+}
+
+static int queue_cb(struct nlmsghdr const *nl, void *data)
+{
+        (void) data;
+
+        struct nlattr *attr[NFQA_MAX + 1] = {0};
+
+        if (nfq_nlmsg_parse(nl, attr) < 0) {
+                l_error("failed to parse attributes");
+                return MNL_CB_ERROR;
+        }
+
+        if (attr[NFQA_PACKET_HDR] == NULL || attr[NFQA_PAYLOAD] == NULL) {
+                l_error("invalid queue packet");
+                return MNL_CB_ERROR;
+        }
+
+        struct nfqnl_msg_packet_hdr *ph =
+                mnl_attr_get_payload(attr[NFQA_PACKET_HDR]);
+
+        uint16_t proto = ntohs(ph->hw_protocol);
+        uint8_t family = AF_UNSPEC;
+
+        if (proto == ETHERTYPE_IP)
+                family = AF_INET;
+
+        else if (proto == ETHERTYPE_IPV6)
+                family = AF_INET6;
+
+        else {
+                l_error("invalid protocol received");
+                return MNL_CB_ERROR;
+        }
+
+        void *payload = mnl_attr_get_payload(attr[NFQA_PAYLOAD]);
+        uint16_t plen = mnl_attr_get_payload_len(attr[NFQA_PAYLOAD]);
+
+        struct pkt_buff *pkt = pktb_alloc(family, payload, plen, 0xff);
+
+        if (pkt == NULL) {
+                l_error("failed to allocate packet buffer");
+                abort();
+        }
+
+        if (!strip_mptcp(pkt, family)) {
+                pktb_free(pkt);
+                return MNL_CB_ERROR;
+        }
+
+        return send_verdict(nl, ph, pkt);
 }
 
 static bool queue_handler(struct l_io *io, void *user_data)
@@ -1199,20 +1199,115 @@ static bool queue_handler(struct l_io *io, void *user_data)
         L_AUTO_FREE_VAR(char *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
 
-        ssize_t ret;
-        mnl_socket_setsockopt(so_queue, NETLINK_NO_ENOBUFS, &ret, sizeof(ssize_t));
-        while (true) {
-                ret = mnl_socket_recvfrom(so_queue, buf, MNL_SOCKET_BUFFER_SIZE);
-                if (ret == -1) {
-                        fprintf(stderr, "recfrom error\n");
-                        return EXIT_FAILURE;
-                }
+        ssize_t ret = mnl_socket_recvfrom(so_queue,
+                                          buf,
+                                          MNL_SOCKET_BUFFER_SIZE);
 
-                ret = mnl_cb_run(buf, ret, 0, portid_queue, queue_cb, NULL);
-                if (ret < 0) {
-                        fprintf(stderr, "cb error\n");
-                        return EXIT_FAILURE;
-                }
+        if (ret == -1) {
+                l_error( "failed to read from queue");
+                return false;
+        }
+
+        ret = mnl_cb_run(buf, ret, 0, portid_queue, queue_cb, NULL);
+
+        return ret > 0;
+}
+
+static struct mnl_socket *init_socket(uint32_t *pid)
+{
+        struct mnl_socket *sock =
+                mnl_socket_open2(NETLINK_ROUTE, SOCK_CLOEXEC);
+
+        if (sock == NULL){
+                l_error("failed to open socket netlink");
+                return NULL;
+        }
+
+        if (mnl_socket_bind(sock, 0, MNL_SOCKET_AUTOPID) < 0) {
+                l_error("failed to bind socket netlink");
+                mnl_socket_close(sock);
+                return NULL;
+        }
+
+        *pid = mnl_socket_get_portid(sock);
+
+        return sock;
+}
+
+static bool setup_so_queue(void)
+{
+        so_queue = init_socket(&portid_queue);
+
+        if (so_queue == NULL)
+                return false;
+
+        uint8_t op = 1;
+        mnl_socket_setsockopt(so_queue,
+                              NETLINK_NO_ENOBUFS,
+                              &op,
+                              sizeof(ssize_t));
+
+        L_AUTO_FREE_VAR(char *, buf) =
+                l_malloc(MNL_SOCKET_BUFFER_SIZE);
+
+        struct nlmsghdr *nl =
+                nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
+        nfq_nlmsg_cfg_put_cmd(nl, AF_INET, NFQNL_CFG_CMD_BIND);
+
+        if (mnl_socket_sendto(so_queue, nl, nl->nlmsg_len) < 0) {
+                l_error("failed to bind to queue");
+                return false;
+        }
+
+        nl = nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
+        nfq_nlmsg_cfg_put_params(nl, NFQNL_COPY_PACKET, 0xffff);
+
+        mnl_attr_put_u32(nl, NFQA_CFG_FLAGS, htonl(NFQA_CFG_F_GSO));
+        mnl_attr_put_u32(nl, NFQA_CFG_MASK, htonl(NFQA_CFG_F_GSO));
+
+        if (mnl_socket_sendto(so_queue, nl, nl->nlmsg_len) < 0) {
+                l_error("failed to configure queue");
+                return false;
+        }
+
+        struct l_io *io = l_io_new(mnl_socket_get_fd(so_queue));
+
+        if (io == NULL) {
+                l_error("failed add watcher to queue");
+                return false;
+        }
+
+        //check ret
+        l_io_set_close_on_destroy(io, true);
+        l_io_set_read_handler(io, queue_handler, NULL, NULL);
+
+        return true;
+}
+
+static bool validate_conf(void)
+{
+        if (check_invalid_queue(config.whitelist.ipv4) &&
+            check_invalid_queue(config.whitelist.ipv6) &&
+            check_invalid_queue(config.blacklist.ipv4) &&
+            check_invalid_queue(config.blacklist.ipv6)) {
+                l_error("no whitelist nor blacklist configured");
+                return false;
+        }
+
+        if (elem_collision(config.whitelist.ipv4, 
+                           config.blacklist.ipv4) ||
+            elem_collision(config.whitelist.ipv6,
+                           config.blacklist.ipv6)) {
+                l_error("whitelist elements collide with blacklist "
+                        "elements");
+                return false;
+        }
+
+        if (config.use_stun && 
+            (config.stun_server == NULL || 
+             config.stun_port == 0)) {
+                l_error("no stun server specified");
+                return false;
         }
 
         return true;
@@ -1288,8 +1383,10 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
 
                 if (config.use_stun) {
                         struct in_addr addr;
-                        if (!get_public_ipv4((char *) i->name, &addr))
+                        if (!get_public_ipv4((char *) i->name, &addr)) {
+                                l_error("failed to get public ip");
                                 return false;
+                        }
 
                         addr_pointer = &addr;
                 } else 
@@ -1314,118 +1411,64 @@ static int net_check_init(struct mptcpd_pm *pm)
 {
         (void) pm;
 
-        //set up handler to read from queue and strip mptcp option
-
-        mptcpd_plugin_read_config(PLUGIN_NAME, parse_config, NULL);
-
-        if (check_invalid_queue(config.whitelist.ipv4) &&
-            check_invalid_queue(config.whitelist.ipv6) &&
-            check_invalid_queue(config.blacklist.ipv4) &&
-            check_invalid_queue(config.blacklist.ipv6)) {
-                //l_error
-                //clean
+        if (!mptcpd_plugin_read_config(PLUGIN_NAME, parse_config, NULL))
                 return EXIT_FAILURE;
-        }
 
-        if (elem_collision(config.whitelist.ipv4, 
-                           config.blacklist.ipv4) ||
-            elem_collision(config.whitelist.ipv6,
-                           config.blacklist.ipv6)) {
-                //l_error
-                //clean
-                return EXIT_FAILURE;
-        }
-
-        if (config.use_stun && 
-            (config.stun_server == NULL || 
-             config.stun_port == 0)) {
-                //l_error
-                //clean
-                return EXIT_FAILURE;
-        }
+        if (!validate_conf())
+                goto err_conf;
 
         whitelisted_ifs = l_uintset_new(USHRT_MAX);
         blacklisted_ifs = l_uintset_new(USHRT_MAX);
+        ruled_ifs = l_uintset_new(USHRT_MAX);
 
         if (config.use_stun &&
             !stun_client_init(config.stun_server, config.stun_port)) {
                 l_info("failed to init stun");
-                return EXIT_FAILURE;
+                goto err_sets;
         }
 
-        so_queue = mnl_socket_open2(NETLINK_NETFILTER, SOCK_CLOEXEC);
+        if (!setup_so_queue())
+                goto err_stun;
 
-        if (so_queue == NULL) {
-                l_error("failed open socket");
-                return EXIT_FAILURE;
-        }
+        so_rules = init_socket(&portid_rules);
 
-        if (mnl_socket_bind(so_queue, 0, MNL_SOCKET_AUTOPID) < 0) {
-                fprintf(stderr, "bind error");
-                return EXIT_FAILURE;
-        }
-
-        portid_queue = mnl_socket_get_portid(so_queue);
-
-        L_AUTO_FREE_VAR(char *, buf) =
-                l_malloc(MNL_SOCKET_BUFFER_SIZE);
-
-        struct nlmsghdr *nl =
-                nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
-        nfq_nlmsg_cfg_put_cmd(nl, AF_INET, NFQNL_CFG_CMD_BIND);
-
-        if (mnl_socket_sendto(so_queue, nl, nl->nlmsg_len) < 0) {
-                fprintf(stderr, "send error");
-                return EXIT_FAILURE;
-        }
-
-        nl = nfq_nlmsg_put(buf, NFQNL_MSG_CONFIG, QUEUE_NUM);
-        nfq_nlmsg_cfg_put_params(nl, NFQNL_COPY_PACKET, 0xffff);
-
-        mnl_attr_put_u32(nl, NFQA_CFG_FLAGS, htonl(NFQA_CFG_F_GSO));
-        mnl_attr_put_u32(nl, NFQA_CFG_MASK, htonl(NFQA_CFG_F_GSO));
-
-        if (mnl_socket_sendto(so_queue, nl, nl->nlmsg_len) < 0) {
-                fprintf(stderr, "send error");
-                return EXIT_FAILURE;
-        }
-
-        struct l_io *io = l_io_new(mnl_socket_get_fd(so_queue));
-
-        l_io_set_close_on_destroy(io, true);
-        l_io_set_read_handler(io, queue_handler, NULL, NULL);
-
-        so_rules = mnl_socket_open2(NETLINK_NETFILTER, SOCK_CLOEXEC);
-
-        if (so_rules == NULL) {
-                l_error("failed open socket");
-                return EXIT_FAILURE;
-        }
-
-        if (mnl_socket_bind(so_rules, 0, MNL_SOCKET_AUTOPID)) {
-                l_error("failed bind socket");
-                return EXIT_FAILURE;
-        }
-
-        portid_rules = mnl_socket_get_portid(so_rules);
-
-        ruled_ifs = l_uintset_new(USHRT_MAX);
+        if (so_rules == NULL)
+                goto err_sock;
 
         add_table(PLUGIN_NAME);
 
         add_chain(PLUGIN_NAME, CHAIN_IN_NAME, NF_INET_LOCAL_IN);
         add_chain(PLUGIN_NAME, CHAIN_OUT_NAME, NF_INET_LOCAL_OUT);
-        (void) add_chain;
 
         if (!mptcpd_plugin_register_ops(PLUGIN_NAME, &pm_ops)) {
                 l_error("Failed to initialize plugin '%s'.", PLUGIN_NAME);
-                //clean
-                return EXIT_FAILURE;
+                goto err_full;
         }
         
         l_info("MPTCP network check plugin started.");
         
         return EXIT_SUCCESS;
+
+err_full:
+        del_table(PLUGIN_NAME);
+        mnl_socket_close(so_rules);
+
+err_sock:
+        mnl_socket_close(so_queue);
+
+err_stun:
+        if (config.use_stun)
+                stun_client_destroy();
+
+err_sets:
+        l_uintset_free(ruled_ifs);
+        l_uintset_free(blacklisted_ifs);
+        l_uintset_free(whitelisted_ifs);
+
+err_conf:
+        config_destroy();
+
+        return EXIT_FAILURE;
 }
 
 static void net_check_exit(struct mptcpd_pm *pm)
@@ -1434,8 +1477,6 @@ static void net_check_exit(struct mptcpd_pm *pm)
 
         del_table(PLUGIN_NAME);
 
-        l_uintset_free(ruled_ifs);
-
         mnl_socket_close(so_rules);
 
         mnl_socket_close(so_queue);
@@ -1443,15 +1484,11 @@ static void net_check_exit(struct mptcpd_pm *pm)
         if (config.use_stun)
                 stun_client_destroy();
 
+        l_uintset_free(ruled_ifs);
         l_uintset_free(blacklisted_ifs);
-
         l_uintset_free(whitelisted_ifs);
 
-        l_free(config.stun_server);
-
-        l_queue_destroy(config.whitelist.ipv6, l_free);
-
-        l_queue_destroy(config.whitelist.ipv4, l_free);
+        config_destroy();
 
         l_info("MPTCP network check plugin exited.");
 }
