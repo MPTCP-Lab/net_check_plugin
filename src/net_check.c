@@ -1415,7 +1415,7 @@ static int net_check_init(struct mptcpd_pm *pm)
                 return EXIT_FAILURE;
 
         if (!validate_conf())
-                goto err_conf;
+                return EXIT_FAILURE;
 
         whitelisted_ifs = l_uintset_new(USHRT_MAX);
         blacklisted_ifs = l_uintset_new(USHRT_MAX);
@@ -1424,16 +1424,16 @@ static int net_check_init(struct mptcpd_pm *pm)
         if (config.use_stun &&
             !stun_client_init(config.stun_server, config.stun_port)) {
                 l_info("failed to init stun");
-                goto err_sets;
+                return EXIT_FAILURE;
         }
 
         if (!setup_so_queue())
-                goto err_stun;
+                return EXIT_FAILURE;
 
         so_rules = init_socket(&portid_rules);
 
         if (so_rules == NULL)
-                goto err_sock;
+                return EXIT_FAILURE;
 
         add_table(PLUGIN_NAME);
 
@@ -1442,33 +1442,12 @@ static int net_check_init(struct mptcpd_pm *pm)
 
         if (!mptcpd_plugin_register_ops(PLUGIN_NAME, &pm_ops)) {
                 l_error("Failed to initialize plugin '%s'.", PLUGIN_NAME);
-                goto err_full;
+                return EXIT_FAILURE;
         }
         
         l_info("MPTCP network check plugin started.");
         
         return EXIT_SUCCESS;
-
-err_full:
-        del_table(PLUGIN_NAME);
-        mnl_socket_close(so_rules);
-
-err_sock:
-        mnl_socket_close(so_queue);
-
-err_stun:
-        if (config.use_stun)
-                stun_client_destroy();
-
-err_sets:
-        l_uintset_free(ruled_ifs);
-        l_uintset_free(blacklisted_ifs);
-        l_uintset_free(whitelisted_ifs);
-
-err_conf:
-        config_destroy();
-
-        return EXIT_FAILURE;
 }
 
 static void net_check_exit(struct mptcpd_pm *pm)
