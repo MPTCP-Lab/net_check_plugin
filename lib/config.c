@@ -212,11 +212,12 @@ bool validate_conf(struct conf *config)
 
 void config_destroy(struct conf *config)
 {
-        l_free(config->stun_server);
+        if (config->stun_server)
+                l_free(config->stun_server);
 
         l_queue_destroy(config->blacklist.ipv6, l_free);
-        l_queue_destroy(config->whitelist.ipv4, l_free);
+        l_queue_destroy(config->whitelist.ipv6, l_free);
 
-        l_queue_destroy(config->blacklist.ipv6, l_free);
+        l_queue_destroy(config->blacklist.ipv4, l_free);
         l_queue_destroy(config->whitelist.ipv4, l_free);
 }
