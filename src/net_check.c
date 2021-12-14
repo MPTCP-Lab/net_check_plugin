@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include <limits.h>
 
 #include <arpa/inet.h>

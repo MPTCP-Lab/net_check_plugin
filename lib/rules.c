@@ -10,7 +10,6 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nf_tables.h>
 
-#include <stdlib.h>
 #include <stddef.h>
 #include <time.h>
 
@@ -180,10 +179,10 @@ static struct nftnl_rule *create_rule(char const *const table,
 	add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, true);
 
 	add_expr_payload(r,
-                              NFT_REG_1,
-                              NFT_PAYLOAD_TRANSPORT_HEADER,
-                              offsetof(struct tcphdr, th_flags),
-                              sizeof(uint8_t));
+                         NFT_REG_1,
+                         NFT_PAYLOAD_TRANSPORT_HEADER,
+                         offsetof(struct tcphdr, th_flags),
+                         sizeof(uint8_t));
 	add_expr_cmp(r, NFT_REG_1, NFT_CMP_EQ, TH_SYN);
 
 	add_expr_queue(r, QUEUE_NUM);
@@ -191,24 +190,20 @@ static struct nftnl_rule *create_rule(char const *const table,
         return r;
 }
 
-static ssize_t nft_communication(void *buf,
-                                 size_t len,
-                                 uint32_t seq,
-                                 mnl_cb_t fun,
-                                 void *data)
+static ssize_t nft_recv(void *buf,
+                        uint32_t seq,
+                        mnl_cb_t fun,
+                        void *data)
 {
-        if (mnl_socket_sendto(sock, buf, len) < 0) {
-                l_error("failed to send");
-                return -1; //maybe return error
-        }
-
         ssize_t ret = mnl_socket_recvfrom(sock,
                                           buf,
                                           MNL_SOCKET_BUFFER_SIZE);
         while (ret > 0) {
                 ret = mnl_cb_run(buf, ret, seq, pid, fun, data);
-                if (ret <= 0)
+
+                if (ret <= MNL_CB_STOP)
                         break;
+
                 ret = mnl_socket_recvfrom(sock,
                                           buf,
                                           MNL_SOCKET_BUFFER_SIZE);
@@ -217,10 +212,26 @@ static ssize_t nft_communication(void *buf,
         return ret;
 }
 
-void add_rule(char const *const table,
-              char const *const chain,
-              uint32_t if_index,
-              uint16_t key)
+static ssize_t nft_send_batch(struct mnl_nlmsg_batch *batch,
+                              void *buf,
+                              uint32_t seq)
+{
+        if (mnl_socket_sendto(sock,
+                              mnl_nlmsg_batch_head(batch),
+                              mnl_nlmsg_batch_size(batch)) < 0) {
+                l_error("failed to send");
+                return -1; //maybe return error
+        }
+
+        mnl_nlmsg_batch_stop(batch);
+
+        return nft_recv(buf, seq, NULL, NULL);
+}
+
+ssize_t add_rule(char const *const table,
+                 char const *const chain,
+                 uint32_t if_index,
+                 uint16_t key)
 {
         L_AUTO_FREE_VAR(uint8_t *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
@@ -258,14 +269,10 @@ void add_rule(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        nft_communication(buf, nl->nlmsg_len, rule_seq, NULL, NULL);
-
-        mnl_nlmsg_batch_stop(batch);
-
-        //maybe return success or failure/error
+        return nft_send_batch(batch, buf, rule_seq);
 }
 
-void add_table(char const *const table)
+ssize_t add_table(char const *const table)
 {
         L_AUTO_FREE_VAR(uint8_t *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
@@ -311,16 +318,12 @@ void add_table(char const *const table)
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        nft_communication(buf, nl->nlmsg_len, table_seq, NULL, NULL);
-
-        mnl_nlmsg_batch_stop(batch);
-
-        //maybe return success or failure/error
+        return nft_send_batch(batch, buf, table_seq);
 }
 
-void add_chain(char const *const table,
-               char const *const chain,
-               uint8_t hook)
+ssize_t add_chain(char const *const table,
+                  char const *const chain,
+                  uint8_t hook)
 {
         L_AUTO_FREE_VAR(uint8_t *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
@@ -369,11 +372,7 @@ void add_chain(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        nft_communication(buf, nl->nlmsg_len, chain_seq, NULL, NULL);
-
-        mnl_nlmsg_batch_stop(batch);
-
-        //maybe return success or failure/error
+        return nft_send_batch(batch, buf, chain_seq);
 }
 
 static int rule_cb(const struct nlmsghdr *nl, void *user_data)
@@ -445,17 +444,18 @@ static uint64_t get_handle(char const *const table,
         nftnl_rule_nlmsg_build_payload(nl, r);
         nftnl_rule_free(r);
 
+        if (mnl_socket_sendto(sock, nl, nl->nlmsg_len) < 0) {
+                l_error("failed to send");
+                return 0; //maybe return error
+        }
+
         struct get_handle_data data = {
                 .handle = 0,
                 .index = index,
                 .key = key
         };
 
-        ssize_t ret = nft_communication(buf,
-                                        nl->nlmsg_len,
-                                        seq,
-                                        rule_cb,
-                                        &data);
+        ssize_t ret = nft_recv(buf, seq, rule_cb, &data);
 
         if (ret == -1) {
                 return 0; //maybe return error
@@ -464,15 +464,15 @@ static uint64_t get_handle(char const *const table,
         return data.handle;
 }
 
-void del_rule(char const *const table,
-              char const *const chain,
-              uint32_t index,
-              uint16_t key)
+ssize_t del_rule(char const *const table,
+                 char const *const chain,
+                 uint32_t index,
+                 uint16_t key)
 {
         uint64_t handle = get_handle(table, chain, index, key);
 
         if (handle == 0)
-                return;
+                return -1;
 
         L_AUTO_FREE_VAR(uint8_t *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
@@ -519,14 +519,10 @@ void del_rule(char const *const table,
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        nft_communication(buf, nl->nlmsg_len, rule_seq, NULL, NULL);
-
-        mnl_nlmsg_batch_stop(batch);
-
-        //maybe return success or failure/error
+        return nft_send_batch(batch, buf, rule_seq);
 }
 
-void del_table(char const *const table)
+ssize_t del_table(char const *const table)
 {
         L_AUTO_FREE_VAR(uint8_t *, buf) =
                 l_malloc(MNL_SOCKET_BUFFER_SIZE);
@@ -572,9 +568,5 @@ void del_table(char const *const table)
         nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
         mnl_nlmsg_batch_next(batch);
 
-        nft_communication(buf, nl->nlmsg_len, table_seq, NULL, NULL);
-
-        mnl_nlmsg_batch_stop(batch);
-
-        //maybe return success or failure/error
+        return nft_send_batch(batch, buf, table_seq);
 }

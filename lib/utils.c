@@ -8,7 +8,7 @@
 struct mnl_socket *init_socket(uint32_t *pid)
 {
         struct mnl_socket *sock =
-                mnl_socket_open2(NETLINK_ROUTE, SOCK_CLOEXEC);
+                mnl_socket_open2(NETLINK_NETFILTER, SOCK_CLOEXEC);
 
         if (sock == NULL){
                 l_error("failed to open socket netlink");
