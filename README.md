@@ -2,11 +2,17 @@
 
 MPTCPD network check plugin
 
+```sh
+./bootstrap
 
-        ./bootstrap
+PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure
 
-        PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure --libdir /usr/local/lib/mptcpd
+#to use system libstuncli
+PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure --enable-system-stuncli
 
-        make 
+make 
 
-        sudo make install
+sudo make install
+
+```
+
