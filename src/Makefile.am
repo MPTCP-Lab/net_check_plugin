@@ -1,16 +1,28 @@
 ## SPDX-License-Identifier: BSD-3-Clause
 ##
 ## Copyright (c) 2017-2019, Intel Corporation
+AM_CPPFLAGS = 				\
+	-I$(top_srcdir)/include		\
+	-I$(top_builddir)/include
 
-#MPTCPD_CFLAGS = \
-#	-I/usr/local/include/mptcpd/ -I/usr/include/ell/
-#MPTCPD_LIBS = -L/usr/local/lib/mptcpd -lmptcpd #-lmnl
-#MPTCPD_PLUGINDIR = /usr/local/lib/mptcpd
+if SYSTEMSTUN
+STUN_INC = -lstuncli
+else
+STUN_INC = $(top_builddir)/lib/libstuncli.la
+endif
+
 
 plugindir = @MPTCPD_PLUGINDIR@
-lib_LTLIBRARIES = net_check.la
+
+plugin_LTLIBRARIES = net_check.la
 
 net_check_la_SOURCES  = net_check.c
-net_check_la_CFLAGS   = $(MPTCPD_CFLAGS) -lstuncli -lmnl -lnftnl -lnetfilter_queue
+net_check_la_LIBADD   = 	              \
+	$(top_builddir)/lib/libnetchek_ops.la \
+	$(MPTCPD_LIBS)		  	      \
+	-lnftnl			              \
+	$(STUN_INC)
+
+net_check_la_CFLAGS   = $(MPTCPD_CFLAGS)
 net_check_la_LDFLAGS  = -no-undefined -module -avoid-version	
-net_check_la_LIBADD   = $(MPTCPD_LIBS)
+net_check_la_CPPFLAGS = $(AM_CPPFLAGS)

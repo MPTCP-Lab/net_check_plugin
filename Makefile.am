@@ -1,7 +1,7 @@
 ## "plugindir" specifies where plugins should be installed.
 ## Override as needed if the default mptcpd plugin directory
 ## is not used.
-SUBDIRS = src
+SUBDIRS = include lib src
 
 ## Doxygen stuff
 @DX_RULES@

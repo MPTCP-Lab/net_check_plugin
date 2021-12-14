@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <libstuncli.h>
+#include <libstuncli/libstuncli.h>
 
 #define BUFFSIZE 1024
 
