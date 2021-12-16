@@ -38,7 +38,7 @@ PKG_PROG_PKG_CONFIG
 # ---------------------------------------------------------------
 # Checks for libraries.
 # ---------------------------------------------------------------
-ELL_VERSION=0.27  dnl Minimum required version of ELL.
+ELL_VERSION=0.30  dnl Minimum required version of ELL.
 
 # Find mptcpd and ELL
 PKG_CHECK_MODULES([MPTCPD], [mptcpd])

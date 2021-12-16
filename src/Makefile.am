@@ -1,6 +1,3 @@
-## SPDX-License-Identifier: BSD-3-Clause
-##
-## Copyright (c) 2017-2019, Intel Corporation
 AM_CPPFLAGS = 				\
 	-I$(top_srcdir)/include		\
 	-I$(top_builddir)/include
@@ -25,4 +22,3 @@ net_check_la_LIBADD   = 	              \
 
 net_check_la_CFLAGS   = $(MPTCPD_CFLAGS)
 net_check_la_LDFLAGS  = -no-undefined -module -avoid-version	
-net_check_la_CPPFLAGS = $(AM_CPPFLAGS)
