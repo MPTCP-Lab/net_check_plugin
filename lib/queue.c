@@ -19,7 +19,7 @@
 #include <ell/log.h>
 #include <ell/io.h>
 
-static struct mnl_socket *sock;
+static struct mnl_socket *sock = NULL;
 static uint32_t pid;
 
 static bool strip_mptcp(struct pkt_buff *pkt, uint8_t family)
@@ -236,5 +236,6 @@ bool init_queue(void)
 
 void destroy_queue(void)
 {
-        mnl_socket_close(sock);
+        if (sock != NULL)
+                mnl_socket_close(sock);
 }

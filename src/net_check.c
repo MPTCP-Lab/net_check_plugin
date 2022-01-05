@@ -349,11 +349,15 @@ static int net_check_init(struct mptcpd_pm *pm)
 {
         (void) pm;
 
-        if (!mptcpd_plugin_read_config(PLUGIN_NAME, parse_config, &config))
+        if (!mptcpd_plugin_read_config(PLUGIN_NAME, parse_config, &config)) {
+                l_error("couldn't load configuration");
                 return EXIT_FAILURE;
+        }
 
-        if (!validate_conf(&config))
+        if (!validate_conf(&config)) {
+                l_error("invalid configuration");
                 return EXIT_FAILURE;
+        }
 
         whitelisted_ifs = l_uintset_new(USHRT_MAX);
         blacklisted_ifs = l_uintset_new(USHRT_MAX);
@@ -361,7 +365,7 @@ static int net_check_init(struct mptcpd_pm *pm)
 
         if (config.use_stun &&
             !stun_client_init(config.stun_server, config.stun_port)) {
-                l_info("failed to init stun");
+                l_error("failed to init stun");
                 return EXIT_FAILURE;
         }
 

@@ -18,7 +18,7 @@
 
 #include <netinet/tcp.h>
 
-static struct mnl_socket *sock;
+static struct mnl_socket *sock = NULL;
 static uint32_t pid;
 
 bool init_rules(void)
@@ -38,9 +38,11 @@ bool init_rules(void)
 
 void destroy_rules(void)
 {
-        del_table(PLUGIN_NAME);
+        if (sock != NULL) {
+                del_table(PLUGIN_NAME);
 
-        mnl_socket_close(sock);
+                mnl_socket_close(sock);
+        }
 }
 
 static void add_expr_meta(struct nftnl_rule *rule,
