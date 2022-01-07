@@ -57,16 +57,16 @@ AC_SUBST([ELL_VERSION])
 AX_CFLAGS_WARN_ALL([CFLAGS])
 AX_APPEND_COMPILE_FLAGS([-Wextra -Werror -pedantic])
 
-AC_ARG_ENABLE([system-stuncli],
-              [  --enable-system-stuncli use system libstuncli],
+AC_ARG_ENABLE([system-libstuncli],
+              [  --enable-system-libstuncli use system libstuncli],
               [case "${enableval}" in
-                   yes) systemstuncli=true ;;
-                   no)  systemstuncli=false;;
+                   yes) systemlibstuncli=true ;;
+                   no)  systemlibstuncli=false;;
                    *) AC_MSG_ERROR([bad value ${enableval} for 
-                                    --enable-system-stuncli]) ;;
+                                    --enable-system-libstuncli]) ;;
                esac],
-              [systemstuncli=false])
-AM_CONDITIONAL([SYSTEMSTUN], [test x$systemstuncli = xtrue])
+              [systemlibstuncli=false])
+AM_CONDITIONAL([SYSTEMSTUN], [test x$systemlibstuncli = xtrue])
 
 # ---------------------------------------------------------------
 # Generate our build files.

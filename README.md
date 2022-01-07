@@ -59,11 +59,11 @@ $ PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure
 ```
 
 Optionally if it is desired to use the system `libstuncli`, it can be done
-by giving the `--enable-system-stuncli` option to `configure`, _e.g._:
+by giving the `--enable-system-libstuncli` option to `configure`, _e.g._:
 
 ```sh
 #to use system libstuncli
-$ ./configure --enable-system-stuncli
+$ ./configure --enable-system-libstuncli
 ```
 
 ### Instalation
