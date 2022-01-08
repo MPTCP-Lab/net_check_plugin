@@ -36,6 +36,13 @@ AC_PATH_PROG([PANDOC], [pandoc])
 PKG_PROG_PKG_CONFIG
 
 # ---------------------------------------------------------------
+
+AC_ARG_WITH([libstuncli],
+            AS_HELP_STRING([--with-libstuncli],
+                           [Use system libstuncli]))
+AM_CONDITIONAL([SYSTEMSTUN], [test "x$with_libstuncli" = "xyes"])
+
+# ---------------------------------------------------------------
 # Checks for libraries.
 # ---------------------------------------------------------------
 ELL_VERSION=0.30  dnl Minimum required version of ELL.
@@ -44,6 +51,12 @@ ELL_VERSION=0.30  dnl Minimum required version of ELL.
 PKG_CHECK_MODULES([MPTCPD], [mptcpd])
 PKG_CHECK_MODULES([ELL],
                   [ell >= $ELL_VERSION])
+PKG_CHECK_MODULES([LIBMNL], [libmnl])
+PKG_CHECK_MODULES([LIBNFTNL], [libnftnl])
+PKG_CHECK_MODULES([LIBNETFILTER_QUEUE], [libnetfilter_queue])
+AS_IF([test "x$with_libstuncli" = "xyes"], [
+        PKG_CHECK_MODULES([LIBSTUNCLI], [libstuncli])
+])
 
 PKG_CHECK_VAR([MPTCPD_PLUGINDIR], [mptcpd], [plugindir])
 
@@ -56,17 +69,6 @@ AC_SUBST([ELL_VERSION])
 # ---------------------------------------------------------------
 AX_CFLAGS_WARN_ALL([CFLAGS])
 AX_APPEND_COMPILE_FLAGS([-Wextra -Werror -pedantic])
-
-AC_ARG_ENABLE([system-libstuncli],
-              [  --enable-system-libstuncli use system libstuncli],
-              [case "${enableval}" in
-                   yes) systemlibstuncli=true ;;
-                   no)  systemlibstuncli=false;;
-                   *) AC_MSG_ERROR([bad value ${enableval} for 
-                                    --enable-system-libstuncli]) ;;
-               esac],
-              [systemlibstuncli=false])
-AM_CONDITIONAL([SYSTEMSTUN], [test x$systemlibstuncli = xtrue])
 
 # ---------------------------------------------------------------
 # Generate our build files.
