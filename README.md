@@ -52,7 +52,7 @@ make
 ```
 
 If `configure` returns an error about `mptcpd` not being found set the 
-the environment variable `PKG_CONFIG_PATH` to `/usr/local/lib/pkgconfig`
+environment variable `PKG_CONFIG_PATH` to `/usr/local/lib/pkgconfig`
 and run it again, _e.g._:
 
 ```sh
