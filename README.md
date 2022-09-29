@@ -95,13 +95,13 @@ whitelist=10.0.16.0/20,10.0.3.20,fe80::0/64
 blacklist=10.0.24.0/24
 
 # enables the use of STUN to get the public IPv4
-use-stun=false
+[stun]
 
 # Stun server to use
-stun-server=stun.l.google.com
+server=stun.l.google.com
 
 # Stun server port to connect
-stun-port=3478
+port=3478
 ```
 
 At least, either a whitelist or blacklist have to be defined, and if 
@@ -110,11 +110,11 @@ setted.
 
 ## Running
 
-For the plugin to work properly it is necessary that both `existing_ifs` 
-and `existing_addrs` `notify-flags` are active, _e.g._:
+For the plugin to work properly it is necessary that the `existing` 
+`notify-flags` is active, _e.g._:
 
 ```sh
-$ mptcpd --notify-flags=existing_ifs,existing_addrs
+$ mptcpd --notify-flags=existing
 ```
 
 Since `mptcpd`, by default, loads the plugins in alphabetic order, it can 
@@ -125,5 +125,5 @@ put `net_check` as the first plugin, followed by the others plugins wished
 to load, _e.g._:
 
 ```sh
-$ mptcpd --load-plugins=net_check,addr_adv,misc_plugin --notify-flags=existing_ifs,existing_addrs
+$ mptcpd --load-plugins=net_check,addr_adv,misc_plugin --notify-flags=existing
 ```

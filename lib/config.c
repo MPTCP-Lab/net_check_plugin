@@ -4,6 +4,7 @@
 #include <ell/strv.h>
 #include <ell/queue.h>
 #include <ell/log.h>
+#include <ell/settings.h>
 
 #include <stdlib.h>
 #include <limits.h>
@@ -64,7 +65,7 @@ static bool add_network(struct net_queues *list, char *const network)
         return l_queue_push_tail(queue, net_m);
 }
 
-void parse_config_list(struct l_settings *settings, 
+void parse_config_list(struct l_settings const *settings, 
                        char const *group,
                        char const *key,
                        struct net_queues *queues)
@@ -102,49 +103,52 @@ void parse_config_use_stun(struct l_settings *settings,
         }
 }
 
-void parse_config_stun_server(struct l_settings *settings,
+void parse_config_stun_server(struct l_settings const *settings,
                               char const *group,
                               struct conf *config)
 {
         char *const stun_server = l_settings_get_string(settings,
                                                         group,
-                                                        "stun-server");
+                                                        "server");
 
         if (stun_server != NULL && strlen(stun_server) != 0)
                 config->stun_server = stun_server;
 }
 
-void parse_config_stun_port(struct l_settings *settings,
+void parse_config_stun_port(struct l_settings const *settings,
                             char const *group,
                             struct conf *config)
 {
         uint32_t port;
-        if (l_settings_get_uint(settings, group, "stun-port", &port))
+        if (l_settings_get_uint(settings, group, "port", &port))
                 if (port <= USHRT_MAX)
                         config->stun_port = port;
 }
 
-void parse_config(struct l_settings *settings, void *user_data)
+void parse_config(struct l_settings const *settings, void *user_data)
 {
         struct conf *config = user_data;
 
-        static char group[] = "core";
+        static char core_group[] = "core";
+        static char stun_group[] = "core";
 
         parse_config_list(settings,
-                          group,
+                          core_group,
                           "whitelist",
                           &config->whitelist);
 
         parse_config_list(settings,
-                          group,
+                          core_group,
                           "blacklist",
                           &config->blacklist);
 
-        parse_config_use_stun(settings, group, config);
-        
-        parse_config_stun_server(settings, group, config);
+        config->use_stun = l_settings_has_group(settings, stun_group);
 
-        parse_config_stun_port(settings, group, config);
+        if (config->use_stun) {
+                parse_config_stun_server(settings, stun_group, config);
+
+                parse_config_stun_port(settings, stun_group, config);
+        }
 }
 
 static inline bool check_invalid_queue(struct l_queue *queue)

@@ -317,16 +317,13 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
                 return true;
 
         if (sa->sa_family == AF_INET) {
-                struct in_addr *addr_pointer;
+                struct in_addr *addr_pointer = NULL;
 
                 if (config.use_stun) {
-                        struct in_addr addr;
-                        if (!get_public_ipv4((char *) i->name, &addr)) {
+                        if (!get_public_ipv4((char *) i->name, addr_pointer)) {
                                 l_error("failed to get public ip");
                                 return false;
                         }
-
-                        addr_pointer = &addr;
                 } else 
                         addr_pointer = 
                                 &((struct sockaddr_in *) sa)->sin_addr;
