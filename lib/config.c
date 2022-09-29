@@ -89,20 +89,6 @@ void parse_config_list(struct l_settings const *settings,
         l_strv_free(list);
 }
 
-void parse_config_use_stun(struct l_settings *settings,
-                           char const *group,
-                           struct conf *config)
-{
-        bool use_stun;
-        if (l_settings_get_bool(settings,
-                                group,
-                                "use-stun",
-                                &use_stun)) {
-
-                config->use_stun = use_stun;
-        }
-}
-
 void parse_config_stun_server(struct l_settings const *settings,
                               char const *group,
                               struct conf *config)
@@ -130,17 +116,17 @@ void parse_config(struct l_settings const *settings, void *user_data)
         struct conf *config = user_data;
 
         static char core_group[] = "core";
-        static char stun_group[] = "core";
+        static char stun_group[] = "stun";
 
         parse_config_list(settings,
                           core_group,
-                          "whitelist",
-                          &config->whitelist);
+                          "allowlist",
+                          &config->allowlist);
 
         parse_config_list(settings,
                           core_group,
-                          "blacklist",
-                          &config->blacklist);
+                          "blocklist",
+                          &config->blocklist);
 
         config->use_stun = l_settings_has_group(settings, stun_group);
 
@@ -187,19 +173,19 @@ static bool elem_collision(struct l_queue *q1, struct l_queue *q2)
 
 bool validate_conf(struct conf *config)
 {
-        if (check_invalid_queue(config->whitelist.ipv4) &&
-            check_invalid_queue(config->whitelist.ipv6) &&
-            check_invalid_queue(config->blacklist.ipv4) &&
-            check_invalid_queue(config->blacklist.ipv6)) {
-                l_error("no whitelist nor blacklist configured");
+        if (check_invalid_queue(config->allowlist.ipv4) &&
+            check_invalid_queue(config->allowlist.ipv6) &&
+            check_invalid_queue(config->blocklist.ipv4) &&
+            check_invalid_queue(config->blocklist.ipv6)) {
+                l_error("no allowlist nor blocklist configured");
                 return false;
         }
 
-        if (elem_collision(config->whitelist.ipv4, 
-                           config->blacklist.ipv4) ||
-            elem_collision(config->whitelist.ipv6,
-                           config->blacklist.ipv6)) {
-                l_error("whitelist elements collide with blacklist "
+        if (elem_collision(config->allowlist.ipv4, 
+                           config->blocklist.ipv4) ||
+            elem_collision(config->allowlist.ipv6,
+                           config->blocklist.ipv6)) {
+                l_error("allowlist elements collide with blocklist "
                         "elements");
                 return false;
         }
@@ -219,9 +205,9 @@ void config_destroy(struct conf *config)
         if (config->stun_server)
                 l_free(config->stun_server);
 
-        l_queue_destroy(config->blacklist.ipv6, l_free);
-        l_queue_destroy(config->whitelist.ipv6, l_free);
+        l_queue_destroy(config->blocklist.ipv6, l_free);
+        l_queue_destroy(config->allowlist.ipv6, l_free);
 
-        l_queue_destroy(config->blacklist.ipv4, l_free);
-        l_queue_destroy(config->whitelist.ipv4, l_free);
+        l_queue_destroy(config->blocklist.ipv4, l_free);
+        l_queue_destroy(config->allowlist.ipv4, l_free);
 }

@@ -2,8 +2,8 @@
 The Network Check Plugin - `net_check` - is a plugin for the Multipath 
 TCP Daemon - [`mptcpd`](https://intel.github.io/mptcpd/) - that blocks 
 [mptcp](https://www.rfc-editor.org/rfc/rfc8684.html) through untrusted 
-networks. It works by reading trusted networks from a whitelist or 
-untrusted networks from a blacklist. It requires a 
+networks. It works by reading trusted networks from a allowlist or 
+untrusted networks from a blocklist. It requires a 
 [patched version of mptcpd](https://github.com/dulive/mptcpd/tree/patched_version) 
 that adds configuration files for plugins, plugin notification of 
 existing system network interfaces and control over event flooding to 
@@ -89,10 +89,10 @@ explanation of the possible options.
 [core]
 
 # a list of trusted networks, it can contain IPv4 or IPv6 and with or without mask
-whitelist=10.0.16.0/20,10.0.3.20,fe80::0/64
+allowlist=10.0.16.0/20,10.0.3.20,fe80::0/64
 
 # a list of untrusted networks, it can contain IPv4 or IPv6 and with or without mask
-blacklist=10.0.24.0/24
+blocklist=10.0.24.0/24
 
 # enables the use of STUN to get the public IPv4
 [stun]
@@ -104,7 +104,7 @@ server=stun.l.google.com
 port=3478
 ```
 
-At least, either a whitelist or blacklist have to be defined, and if 
+At least, either a allowlist or blocklist have to be defined, and if 
 `use-stun` is set to `true` both `stun-server` and `stun-port` have to be
 setted.
 

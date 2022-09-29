@@ -18,17 +18,17 @@
 #include <net_check/private/rules.h>
 #include <net_check/private/queue.h>
 
-static struct l_uintset *whitelisted_ifs;
-static struct l_uintset *blacklisted_ifs;
+static struct l_uintset *allowlisted_ifs;
+static struct l_uintset *blocklisted_ifs;
 
 static struct l_uintset *ruled_ifs;
 
 struct conf config = {
-        .whitelist = {
+        .allowlist = {
                 .ipv4 = NULL,
                 .ipv6 = NULL
         },
-        .blacklist = { 
+        .blocklist = { 
                 .ipv4 = NULL,
                 .ipv6 = NULL
         },
@@ -128,13 +128,13 @@ static void allow_mptcp(struct mptcpd_interface const *i,
                         struct sockaddr const *sa,
                         struct mptcpd_pm *pm)
 {
-        if (!l_uintset_contains(whitelisted_ifs, i->index)) {
+        if (!l_uintset_contains(allowlisted_ifs, i->index)) {
                 do_flood(i,
                          sa,
                          pm,
                          mptcpd_plugin_new_local_address_flow);
 
-                l_uintset_put(whitelisted_ifs, i->index);
+                l_uintset_put(allowlisted_ifs, i->index);
 
                 if (l_uintset_contains(ruled_ifs, i->index)) {
                         del_rule(PLUGIN_NAME,
@@ -163,7 +163,7 @@ static void block_mptcp(struct mptcpd_interface const *i,
                  mptcpd_plugin_delete_local_address_flow);
 
         if (to_insert)
-                l_uintset_put(blacklisted_ifs, i->index);
+                l_uintset_put(blocklisted_ifs, i->index);
 
         if (!l_uintset_contains(ruled_ifs, i->index)) {
                 //check if error occurred
@@ -188,33 +188,33 @@ static bool apply_check_ipv4(struct mptcpd_interface const *i,
                              struct mptcpd_pm *pm,
                              struct in_addr *ipv4)
 {
-        if (!l_queue_isempty(config.whitelist.ipv4)) {
+        if (!l_queue_isempty(config.allowlist.ipv4)) {
 
-                bool blacklisted =
-                        check_network_ipv4(config.blacklist.ipv4, ipv4);
+                bool blocklisted =
+                        check_network_ipv4(config.blocklist.ipv4, ipv4);
 
-                if (check_network_ipv4(config.whitelist.ipv4, ipv4) &&
-                    !blacklisted) {
+                if (check_network_ipv4(config.allowlist.ipv4, ipv4) &&
+                    !blocklisted) {
                         
                         allow_mptcp(i, sa, pm);
 
                         return true;
                 } 
 
-                block_mptcp(i, sa, pm, blacklisted);
+                block_mptcp(i, sa, pm, blocklisted);
 
                 return false;
         }
 
-        if (!l_queue_isempty(config.blacklist.ipv4) &&
-            check_network_ipv4(config.blacklist.ipv4, ipv4)) {
+        if (!l_queue_isempty(config.blocklist.ipv4) &&
+            check_network_ipv4(config.blocklist.ipv4, ipv4)) {
                 block_mptcp(i, sa, pm, true);
 
                 return false;
         }
 
-        return l_uintset_contains(whitelisted_ifs, i->index) ||
-               l_queue_isempty(config.whitelist.ipv6);
+        return l_uintset_contains(allowlisted_ifs, i->index) ||
+               l_queue_isempty(config.allowlist.ipv6);
 }
 
 //can probably be simplified
@@ -223,32 +223,32 @@ static bool apply_check_ipv6(struct mptcpd_interface const *i,
                              struct mptcpd_pm *pm,
                              struct in6_addr *ipv6)
 {
-        if (!l_queue_isempty(config.whitelist.ipv6)) {
-                bool blacklisted =
-                        check_network_ipv6(config.blacklist.ipv6, ipv6);
+        if (!l_queue_isempty(config.allowlist.ipv6)) {
+                bool blocklisted =
+                        check_network_ipv6(config.blocklist.ipv6, ipv6);
 
-                if (check_network_ipv6(config.whitelist.ipv6, ipv6) &&
-                    !blacklisted) {
+                if (check_network_ipv6(config.allowlist.ipv6, ipv6) &&
+                    !blocklisted) {
                         
                         allow_mptcp(i, sa, pm);
 
                         return true;
                 } 
 
-                block_mptcp(i, sa, pm, blacklisted);
+                block_mptcp(i, sa, pm, blocklisted);
 
                 return false;
         }
 
-        if (!l_queue_isempty(config.blacklist.ipv6) &&
-            check_network_ipv6(config.blacklist.ipv6, ipv6)) {
+        if (!l_queue_isempty(config.blocklist.ipv6) &&
+            check_network_ipv6(config.blocklist.ipv6, ipv6)) {
                 block_mptcp(i, sa, pm, true);
 
                 return false;
         }
 
-        return l_uintset_contains(whitelisted_ifs, i->index) ||
-               l_queue_isempty(config.whitelist.ipv4);
+        return l_uintset_contains(allowlisted_ifs, i->index) ||
+               l_queue_isempty(config.allowlist.ipv4);
 }
 
 // ----------------------------------------------------------------------
@@ -258,8 +258,8 @@ static bool net_check_new_interface(struct mptcpd_interface const *i,
 {
         (void) pm;
 
-        if (l_queue_isempty(config.whitelist.ipv4) &&
-            l_queue_isempty(config.whitelist.ipv6))
+        if (l_queue_isempty(config.allowlist.ipv4) &&
+            l_queue_isempty(config.allowlist.ipv6))
             return true;
 
         //check if error occurred
@@ -308,12 +308,12 @@ static bool net_check_new_local_address(struct mptcpd_interface const *i,
 {
         (void) pm;
 
-        if (l_uintset_contains(blacklisted_ifs, i->index))
+        if (l_uintset_contains(blocklisted_ifs, i->index))
                 return false;
 
-        if (l_uintset_contains(whitelisted_ifs, i->index) &&
-            l_queue_isempty(config.blacklist.ipv4) &&
-            l_queue_isempty(config.blacklist.ipv6))
+        if (l_uintset_contains(allowlisted_ifs, i->index) &&
+            l_queue_isempty(config.blocklist.ipv4) &&
+            l_queue_isempty(config.blocklist.ipv6))
                 return true;
 
         if (sa->sa_family == AF_INET) {
@@ -356,8 +356,8 @@ static int net_check_init(struct mptcpd_pm *pm)
                 return EXIT_FAILURE;
         }
 
-        whitelisted_ifs = l_uintset_new(USHRT_MAX);
-        blacklisted_ifs = l_uintset_new(USHRT_MAX);
+        allowlisted_ifs = l_uintset_new(USHRT_MAX);
+        blocklisted_ifs = l_uintset_new(USHRT_MAX);
         ruled_ifs = l_uintset_new(USHRT_MAX);
 
         if (config.use_stun &&
@@ -394,8 +394,8 @@ static void net_check_exit(struct mptcpd_pm *pm)
                 stun_client_destroy();
 
         l_uintset_free(ruled_ifs);
-        l_uintset_free(blacklisted_ifs);
-        l_uintset_free(whitelisted_ifs);
+        l_uintset_free(blocklisted_ifs);
+        l_uintset_free(allowlisted_ifs);
 
         config_destroy(&config);
 

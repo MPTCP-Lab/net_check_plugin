@@ -46,8 +46,8 @@ struct get_handle_data {
 };
 
 struct conf {
-        struct net_queues whitelist;
-        struct net_queues blacklist;
+        struct net_queues allowlist;
+        struct net_queues blocklist;
         bool use_stun;
         char *stun_server;
         uint16_t stun_port;
